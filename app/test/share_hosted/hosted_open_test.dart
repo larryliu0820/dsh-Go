@@ -115,11 +115,21 @@ void main() {
       return links;
     }
 
+    Future<void> pumpReplay(WidgetTester tester) async {
+      // Decoding now uses a real compute isolate. Fake frame time alone cannot
+      // let it finish; wait up to five real seconds, then assert below as usual.
+      for (var i = 0; i < 250 && find.byType(ReplayPage).evaluate().isEmpty; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 20)));
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      await pumpFrames(tester, 4);
+    }
+
     for (final scheme in ['https', 'dshgo']) {
       testWidgets('$scheme link → replay', (tester) async {
         final links = await pumpHome(tester);
         links.add(Uri.parse('$scheme://go.dshtui.com/c/M000000001#k=$key'));
-        await pumpFrames(tester, 6);
+        await pumpReplay(tester);
         expect(find.byType(ReplayPage), findsOneWidget);
         expect(find.text('修复登录重复提交'), findsWidgets);
         expect(host.requests.single.url.toString(), 'https://go.dshtui.com/api/v1/c/M000000001');

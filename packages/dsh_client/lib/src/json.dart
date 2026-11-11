@@ -6,7 +6,9 @@
 library;
 
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:math';
+import 'dart:typed_data';
 
 typedef JsonMap = Map<String, Object?>;
 
@@ -54,6 +56,22 @@ Object? tryDecodeJson(String text) {
   } on FormatException {
     return null;
   }
+}
+
+// Small deltas stay synchronous; large baselines must not monopolize the UI
+// isolate. Keep UTF-8 decoding in the worker too for HTTP history responses.
+const _backgroundJsonThreshold = 256 * 1024;
+
+Future<Object?> tryDecodeJsonAsync(String text) {
+  if (text.length < _backgroundJsonThreshold) return Future.value(tryDecodeJson(text));
+  return Isolate.run(() => tryDecodeJson(text));
+}
+
+Future<Object?> tryDecodeJsonBytesAsync(Uint8List bytes) {
+  if (bytes.length < _backgroundJsonThreshold) {
+    return Future.value(tryDecodeJson(utf8.decode(bytes, allowMalformed: true)));
+  }
+  return Isolate.run(() => tryDecodeJson(utf8.decode(bytes, allowMalformed: true)));
 }
 
 final Random _random = Random.secure();

@@ -411,7 +411,7 @@ class ConversationShare {
   });
 
   /// Validates a decoded body; throws [ShareFormatException].
-  factory ConversationShare.fromJson(Map<Object?, Object?> json) {
+  factory ConversationShare.fromJson(Map<Object?, Object?> json, {String? fallbackTitle}) {
     final v = json['v'];
     if (v is! int || v < 1) throw const ShareFormatException('no format version');
     if (v > conversationBodyVersion) throw const ShareFormatException('newer format');
@@ -426,7 +426,7 @@ class ConversationShare {
     final range = json['range'];
     final include = json['include'];
     return ConversationShare(
-      title: _line(json['title'], _maxTitle) ?? appL10n.pluginsChat,
+      title: _line(json['title'], _maxTitle) ?? fallbackTitle ?? appL10n.pluginsChat,
       start: start,
       model: _line(json['model'], 80),
       app: _line(json['app'], 40),

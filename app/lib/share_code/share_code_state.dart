@@ -9,6 +9,7 @@ import '../state/plugins_state.dart';
 import 'guest_fs.dart';
 import 'profile_export.dart';
 import 'share_codec.dart';
+import 'share_decode.dart';
 import 'share_import.dart';
 import 'share_link.dart';
 import 'share_models.dart';
@@ -18,6 +19,14 @@ import 'share_net.dart';
 /// against the checksum the link carries).
 Future<SharePayload> resolveShareLink(ShareLink link, ShareNet net) async =>
     decodeShareFile(await fetchShareLinkText(link, net));
+
+/// The native opener resolves and validates the whole import in one worker.
+/// Keep the Gist checksum check there too, rather than parsing its envelope on
+/// the UI isolate before handing it to the decoder a second time.
+Future<DecodedShareImport> resolveShareImport(ShareLink link, ShareNet net) async => decodeShareImport(
+  link.isGist ? await net.fetchGist(link.gistId!) : link.code!,
+  expectedChecksum: link.isGist ? link.gistSum : null,
+);
 
 /// What a link points at, as `.dshgo` file text (or a bare code): the code
 /// inline, or the file in its Gist, checked against the checksum the link

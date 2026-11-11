@@ -5,14 +5,13 @@
 // in the replay page.
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/l10n.dart';
 import '../../links/app_links.dart';
-import '../../share_code/conversation_share.dart' show decodeConversationFile;
+import '../../share_code/share_decode.dart' show decodeConversationImportBytes;
 import '../../share_code/share_models.dart' show ShareFormatException;
 import '../../share_hosted/hosted_client.dart';
 import '../../share_hosted/hosted_link.dart';
@@ -42,7 +41,7 @@ Future<bool> openHostedLink(BuildContext context, Uri uri) async {
   });
   try {
     final bytes = await container.read(hostedShareClientProvider).download('${ref.origin}/c/${ref.id}#k=${ref.key}');
-    final conversation = decodeConversationFile(utf8.decode(bytes));
+    final conversation = await decodeConversationImportBytes(bytes);
     hint.cancel();
     if (hinted) messenger?.hideCurrentSnackBar();
     if (!context.mounted) return true;

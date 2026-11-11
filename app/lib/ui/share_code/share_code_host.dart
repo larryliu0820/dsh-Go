@@ -11,9 +11,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../l10n/l10n.dart';
 import '../../links/app_links.dart';
-import '../../share_code/conversation_share.dart';
+import '../../share_code/conversation_share.dart' show maxConversationFileBytes;
 import '../../share_code/share_code_state.dart';
 import '../../share_code/share_codec.dart';
+import '../../share_code/share_decode.dart';
 import '../../share_code/share_link.dart';
 import '../../share_code/share_models.dart';
 import '../../share_code/share_net.dart';
@@ -36,9 +37,9 @@ Future<bool> openShareLink(BuildContext context, ShareLink link) async {
   final container = ProviderScope.containerOf(context, listen: false);
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
-    final text = await fetchShareLinkText(link, container.read(shareNetProvider));
+    final decoded = await resolveShareImport(link, container.read(shareNetProvider));
     if (!context.mounted) return true;
-    await _open(context, text, origin: link.isGist ? ShareOrigin.gist : ShareOrigin.link);
+    await _open(context, decoded, origin: link.isGist ? ShareOrigin.gist : ShareOrigin.link);
   } catch (e) {
     messenger?.showSnackBar(SnackBar(content: Text(shareOpenError(e))));
   }
@@ -50,9 +51,9 @@ Future<bool> openShareFile(BuildContext context, File file) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     if (await file.length() > maxConversationFileBytes * 2) throw const ShareDecodeException('file too large');
-    final text = await file.readAsString();
+    final decoded = await decodeShareImportBytes(await file.readAsBytes());
     if (!context.mounted) return true;
-    await _open(context, text, origin: ShareOrigin.file);
+    await _open(context, decoded, origin: ShareOrigin.file);
   } catch (e) {
     messenger?.showSnackBar(SnackBar(content: Text(shareOpenError(e))));
   }
@@ -60,20 +61,13 @@ Future<bool> openShareFile(BuildContext context, File file) async {
 }
 
 /// A conversation opens its replay; anything else its confirm sheet.
-Future<void> _open(BuildContext context, String fileText, {required ShareOrigin origin}) async {
-  final envelope = readShareEnvelope(fileText);
-  final json = decodeShareJson(envelope.code, large: true);
-  if (ShareKind.parse(json['kind']) == ShareKind.conversation) {
-    final share = ConversationShare.fromJson(json);
-    final conversation = DecodedConversation(
-      share,
-      readConversationAssets(envelope.assets, share),
-      code: envelope.code,
-    );
-    await openConversationReplay(context, conversation);
-    return;
+Future<void> _open(BuildContext context, DecodedShareImport decoded, {required ShareOrigin origin}) async {
+  switch (decoded) {
+    case DecodedShareConversation(:final conversation):
+      await openConversationReplay(context, conversation);
+    case DecodedSharePayload(:final payload):
+      await showShareImportSheet(context, payload, origin: origin);
   }
-  await showShareImportSheet(context, SharePayload.fromJson(json), origin: origin);
 }
 
 /// Put it once inside the home route, next to [LinkHost]. It draws nothing:

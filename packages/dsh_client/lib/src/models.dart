@@ -7,6 +7,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'json.dart';
 
@@ -2082,6 +2083,19 @@ DshEvent parseFollowFrame(String sessionId, Object? value, {bool isResync = fals
     default:
       return UnknownFrameEvent(value);
   }
+}
+
+/// Large snapshot parsing walks the baseline's messages, tool results and live
+/// chunks. Small baselines and deltas avoid worker startup costs. Callers must
+/// await this before consuming the next frame.
+Future<DshEvent> parseFollowFrameAsync(String sessionId, Object? value, {bool isResync = false}) {
+  final map = asMap(value);
+  final active = asMap(asMap(map?['assistantStream'])?['activeAttempt']);
+  final large = asListOrEmpty(map?['records']).length >= 128 || (asInt(active?['nextIndex']) ?? 0) >= 128;
+  if (map?['type'] != 'snapshot' || !large) {
+    return Future.value(parseFollowFrame(sessionId, value, isResync: isResync));
+  }
+  return Isolate.run(() => parseFollowFrame(sessionId, value, isResync: isResync));
 }
 
 /// Pretty JSON for debugging output.

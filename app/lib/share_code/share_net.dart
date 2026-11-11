@@ -7,6 +7,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../l10n/l10n.dart';
@@ -146,8 +147,11 @@ class HttpShareNet implements ShareNet {
     }
   }
 
-  Future<Object?> _getJson(Uri url, {required Duration timeout}) async =>
-      jsonDecode(await _getText(url, timeout: timeout));
+  Future<Object?> _getJson(Uri url, {required Duration timeout}) async {
+    final text = await _getText(url, timeout: timeout);
+    // Registry metadata is usually small; only large Gist envelopes need a worker.
+    return text.length < 256 * 1024 ? jsonDecode(text) : await compute(jsonDecode, text);
+  }
 
   Future<String> _getText(Uri url, {required Duration timeout}) async {
     final http = _client()

@@ -359,7 +359,11 @@ void main() {
   testWidgets('a damaged link says so instead of opening', (tester) async {
     final code = encodeShareCode(const PluginShare(notesPlugin));
     final broken = ShareLink.inline(ShareKind.plugin, '${code.substring(0, code.length - 12)}.${code.split('.').last}');
-    await _pump(tester, (c) => openShareLink(c, broken), shareOverrides(net: sampleNet()));
+    late BuildContext context;
+    await _pump(tester, (c) => context = c, shareOverrides(net: sampleNet()));
+    // Start the worker in the real async zone too, not only its final await.
+    await tester.runAsync(() => openShareLink(context, broken));
+    await tester.pump();
     expect(find.text('这个分享码不完整或已损坏'), findsOneWidget);
     expect(find.text('安装插件'), findsNothing);
   });

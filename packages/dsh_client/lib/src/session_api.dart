@@ -1190,7 +1190,8 @@ class _SessionWatch {
         await for (final item in stream.items) {
           if (_stopped) break;
           if (!opened) {
-            final first = parseFollowFrame(sessionId, item, isResync: _lastSeq >= 0);
+            final first = await parseFollowFrameAsync(sessionId, item, isResync: _lastSeq >= 0);
+            _checkHistoryOwner(epoch);
             if (first is! SessionSnapshotEvent) throw const _Resync('follow opened without snapshot');
             await _onSnapshot(first);
             opened = true;
