@@ -36,6 +36,7 @@ class SegmentedPill<T> extends StatefulWidget {
     required this.onChanged,
     this.expand = true,
     this.height = 36,
+    this.onReselect,
   }) : assert(segments.length >= 2);
 
   final List<PillSegment<T>> segments;
@@ -43,6 +44,10 @@ class SegmentedPill<T> extends StatefulWidget {
 
   /// Null disables the control.
   final ValueChanged<T>? onChanged;
+
+  /// A tap on the segment already selected (a 「自定义」 one opening its
+  /// editor again); a drag that ends where it began is not one.
+  final ValueChanged<T>? onReselect;
 
   /// Fill the available width (each segment an equal share); false sizes the
   /// control to its longest label.
@@ -94,6 +99,12 @@ class _SegmentedPillState<T> extends State<SegmentedPill<T>> {
       if (tick) HapticFeedback.selectionClick();
       onChanged(value);
     }
+  }
+
+  void _tap(int index) {
+    final value = widget.segments[index].value;
+    if (value == widget.selected && widget.onReselect != null) return widget.onReselect!(value);
+    _pick(index);
   }
 
   @override
@@ -193,14 +204,14 @@ class _SegmentedPillState<T> extends State<SegmentedPill<T>> {
                         child: Semantics(
                           button: true,
                           enabled: enabled,
-                          onTap: enabled ? () => _pick(i) : null,
+                          onTap: enabled ? () => _tap(i) : null,
                           selected: i == _index,
                           inMutuallyExclusiveGroup: true,
                           label: widget.segments[i].label,
                           excludeSemantics: true,
                           child: GestureDetector(
                             behavior: HitTestBehavior.opaque,
-                            onTap: enabled ? () => _pick(i) : null,
+                            onTap: enabled ? () => _tap(i) : null,
                             child: Center(
                               child: Padding(
                                 padding: const EdgeInsets.symmetric(horizontal: 6),

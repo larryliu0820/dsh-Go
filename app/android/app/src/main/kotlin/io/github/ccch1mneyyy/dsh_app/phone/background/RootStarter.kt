@@ -84,7 +84,7 @@ class RootStarter(private val context: Context, private val onChanged: () -> Uni
                         val ack = Bundles.unmarshal(process.exchange(Bundles.marshal(MuxProtocol.optIn(peer)), remaining()))
                         MuxProtocol.acknowledge(ack, peer)
                     }
-                    backgroundLimit = backgroundRequestLimit(probe::get, probe::containsKey, negotiated != null)
+                    backgroundLimit = backgroundRequestLimit(probe.get(Proto.OK), negotiated != null)
                     null
                 }
             }
@@ -145,6 +145,17 @@ class RootStarter(private val context: Context, private val onChanged: () -> Uni
         onChanged()
     }
 
+    /** Ends this exact process (its displays go with it); a newer connection is left alone. */
+    fun disconnectIfCurrent(expected: PrivilegedChannel) {
+        val closing = synchronized(guard) {
+            if (channel !== expected) return
+            state.disconnect()
+            channel.also { channel = null }
+        }
+        closing?.close()
+        onChanged()
+    }
+
     private fun discardDead() {
         val dead = synchronized(guard) {
             channel?.takeIf { !it.alive() }?.also { channel = null; state.disconnect() }
@@ -173,7 +184,7 @@ class RootStarter(private val context: Context, private val onChanged: () -> Uni
 private class RootChannel(
     val process: RootProcess,
     private val peer: String?,
-    private val supportedBackgroundLimit: Int,
+    @Volatile private var supportedBackgroundLimit: Int,
     private val onFailure: (String) -> Unit,
 ) : PrivilegedChannel {
     private val calls = PrivilegedCalls(if (peer == null) 1 else 3)
@@ -186,8 +197,11 @@ private class RootChannel(
     override fun tryExecute(request: Bundle): Bundle? = calls.tryPreview { exchange(request) }
 
     private fun exchange(request: Bundle): Bundle = try {
-        if (peer == null) Bundles.unmarshal(process.exchange(Bundles.marshal(request), 30_000))
+        val response = if (peer == null) Bundles.unmarshal(process.exchange(Bundles.marshal(request), 30_000))
         else process.exchangeMux(request, peer)
+        if (request.get(Proto.OP) == Proto.OP_PROBE)
+            supportedBackgroundLimit = backgroundRequestLimit(response.get(Proto.OK), peer != null)
+        response
     } catch (error: Exception) {
         val timeout = error is IOException && error.message == "rootTimeout"
         close()

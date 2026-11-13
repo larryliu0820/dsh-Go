@@ -15,7 +15,7 @@
 #   DIRECT_ONLY=1 DIRECT_ROOTFS=/disposable/rootfs DIRECT_MANIFEST=/fixture/manifest.json \
 #     DIRECT_PROOT=/path/to/pinned-source-proot KOTLINC=kotlinc runtime/test-host.sh
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ABI=x86_64
 PORT="${1:-38080}"
 NETWORK="${NETWORK:-1}"
@@ -71,20 +71,28 @@ run() {  # run [extra bwrap args...] -- argv...
 pass() { printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAILED=1; }
 FAILED=0
+trap 'kill $(jobs -pr) 2>/dev/null || true; wait' EXIT
 
 echo "== versions"
-run -- "${GUEST[@]:0:${#GUEST[@]}-3}" /bin/sh -c 'node --version; npm --version; dsh --version 2>&1 | head -3; cat /etc/os-release | head -2' || fail versions
+run -- "${GUEST[@]:0:${#GUEST[@]}-3}" /bin/bash -c 'set -eo pipefail; node --version; npm --version; dsh --version 2>&1 | sed -n "1,3p"; head -2 /etc/os-release' || fail versions
 
 if [[ "$NETWORK" == 1 ]]; then
 echo "== python / pip / venv / git / certificates / dpkg consistency (network)"
 run --share-net -- "${GUEST[@]:0:${#GUEST[@]}-3}" /bin/bash -c '
-  set -e
+  set -eo pipefail
   python3 --version; pip --version | cut -d" " -f1-2; git --version
-  printf "print(sum(range(10)))\n" > /tmp/hello.py && python3 /tmp/hello.py
+  printf "print(sum(range(10)))\n" > /tmp/hello.py
+  python3 /tmp/hello.py
   python3 -c "import ssl, urllib.request; print(\"https via python:\", urllib.request.urlopen(\"https://pypi.org/simple/pip/\", timeout=20).status)"
-  python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q six && /tmp/venv/bin/python -c "import six; print(\"venv+pip install ok\", six.__version__)"
+  python3 -m venv /tmp/venv
+  /tmp/venv/bin/pip install -q six
+  /tmp/venv/bin/python -c "import six; print(\"venv+pip install ok\", six.__version__)"
   git ls-remote https://github.com/termux/proot HEAD | cut -c1-12 | sed "s/^/git https ok: /"
-  cd /tmp && git init -q demo && cd demo && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init && git log --oneline | head -1
+  cd /tmp
+  git init -q demo
+  cd demo
+  git -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+  git log --oneline | head -1
   apt-get check -q 2>&1 | tail -1
 ' && pass "python3, pip, venv, git, https and apt-get check" || fail "python/git checks"
 else echo "  (skipped: NETWORK=0)"; fi
@@ -135,7 +143,10 @@ else
 fi
 for _ in $(seq 1 40); do kill -0 "$BG" 2>/dev/null || break; sleep 0.25; done
 if kill -0 "$BG" 2>/dev/null; then fail "still running 10s after SIGTERM"; kill -KILL "$BG"
-else rc=0; wait "$BG" || rc=$?; pass "dsh exited after SIGTERM (rc=$rc)"; fi
+else
+  rc=0; wait "$BG" || rc=$?
+  [[ $rc == 0 ]] && pass "dsh exited after SIGTERM (rc=$rc)" || fail "dsh exited after SIGTERM (rc=$rc)"
+fi
 
 echo "== dsh web offline (no network namespace access)"
 LOG2="$HERE/.work/$ABI/dsh-web-offline.log"

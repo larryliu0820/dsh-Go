@@ -3,13 +3,17 @@ import assert from 'node:assert/strict';
 import {once} from 'node:events';
 import {readFileSync} from 'node:fs';
 import {createServer} from 'node:http';
+import {connect} from 'node:net';
 import {test} from 'node:test';
 import {apply} from '../bridge/dsh-go-bridge/lib/index.js';
+import {withSources} from './plugin-config-source-fixture.mjs';
 
-async function fixture(t, {connection = true, guardRoutes = false, rejection} = {}) {
+async function fixture(t, {connection = true, guardRoutes = false, rejection, graph, entries} = {}) {
   const dispose = [];
+  const editor = {canWrite: () => true, entries: () => entries};
   const webServer = {
     exact: new Map(), prefixes: new Map(), upgrades: new Map(),
+    tapIndex() { return () => {}; },
     register(route) {
       const table = route.kind === 'exact' ? this.exact : this.prefixes;
       table.set(route.path, route);
@@ -21,16 +25,29 @@ async function fixture(t, {connection = true, guardRoutes = false, rejection} = 
   webServer.register({kind: 'exact', path: '/fixture-route', handler(_req, res) { res.end('fixture'); }});
   const ctx = {
     webServer, logger: {warn() {}}, on() {}, provide() {},
-    get: name => name === 'connection' && connection ? {requestRejection: () => rejection} : undefined,
+    get(name) {
+      if (name === 'connection' && connection) return {requestRejection: () => rejection};
+      if (name === 'clientModules' && graph) return {graph};
+      if (name === 'configEditor' && entries) return editor;
+      if (name === 'loader' && entries) return {entries: () => entries};
+    },
     effect(fn) { const stop = fn(); if (typeof stop === 'function') dispose.push(stop); },
     inject(_deps, fn) { fn(ctx); },
   };
+  if (entries) withSources(ctx, entries);
   apply(ctx, {persist: false, guardRoutes});
-  const server = createServer((req, res) => {
+  let routeGate;
+  const server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://dsh-go.invalid').pathname;
+    const gate = routeGate?.path === path ? routeGate : undefined;
+    if (gate) {
+      routeGate = undefined;
+      gate.arrived.resolve({req, res}); await gate.resume.promise;
+    }
     const route = webServer.exact.get(path) ?? [...webServer.prefixes.values()].find(r => path.startsWith(r.path));
-    if (route) void route.handler(req, res);
+    if (route) await route.handler(req, res);
     else { res.writeHead(404); res.end(); }
+    gate?.done.resolve();
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -39,12 +56,77 @@ async function fixture(t, {connection = true, guardRoutes = false, rejection} = 
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
   });
-  return async (path, init = {}) => {
+  const request = async (path, init = {}) => {
     const response = await fetch(`${webServer.getOrigin()}${path}`, init);
     const text = await response.text();
     return {status: response.status, headers: response.headers, text, body: text.startsWith('{') ? JSON.parse(text) : text};
   };
+  return Object.assign(request, {port: server.address().port, holdNextRoute(path) {
+    const gate = {path, arrived: Promise.withResolvers(), resume: Promise.withResolvers(), done: Promise.withResolvers()};
+    routeGate = gate;
+    return {arrived: gate.arrived.promise, resume: gate.resume.resolve, done: gate.done.promise};
+  }});
 }
+
+const until = async (predicate, label) => {
+  const deadline = Date.now() + 3000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(label);
+    await new Promise(resolve => setImmediate(resolve));
+  }
+};
+
+for (const route of ['occupancy', 'plugin-config']) for (const timing of ['before dispatch', 'while reading']) {
+  test(`shared body ${route} interrupted ${timing} settles and permits retry`, async t => {
+    const schema = Object.assign(value => value, {toJSON: () => ({uid: 1,
+      refs: {1: {type: 'object', dict: {count: 2}}, 2: {type: 'number'}}})});
+    const entry = {options: {id: 'sample', name: 'sample-package', config: {count: 0}},
+      fiber: {state: 2, runtime: {Config: schema}, config: {count: 0}}};
+    const request = await fixture(t, route === 'plugin-config' ? {entries: [entry]} : {});
+    const path = `/dsh-go/v1/${route}${route === 'plugin-config' ? '/sample' : ''}`;
+    // Peer for the production WebServer's wait while Connection is absent.
+    // Partial HTTP input, abort, bridge dispatch and subsequent retry are real.
+    const gate = request.holdNextRoute(path); t.after(gate.resume);
+    const socket = connect(request.port, '127.0.0.1'); t.after(() => socket.destroy());
+    await once(socket, 'connect');
+    socket.write(`POST ${path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{`);
+    const {req, res} = await gate.arrived;
+    let settled = false; gate.done.then(() => { settled = true; });
+    if (timing === 'while reading') {
+      gate.resume();
+      await until(() => req.listenerCount('data') > 0, 'body reader did not start');
+    }
+    const closed = once(res, 'close'); socket.destroy(); await closed;
+    assert.equal(req.aborted, true); assert.equal(req.destroyed, true);
+    const listeners = ['data', 'end', 'error'].map(event => req.listenerCount(event));
+    if (timing === 'before dispatch') gate.resume();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(settled, true, 'a closed IncomingMessage cannot supply later body events');
+    if (timing === 'before dispatch') {
+      assert.deepEqual(['data', 'end', 'error'].map(event => req.listenerCount(event)), listeners,
+        'an already closed request must not retain new body listeners');
+    }
+    const response = await request(path, {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify(route === 'occupancy' ? {bootRev: 'b1', slots: {}} : {})});
+    assert.equal(response.status, route === 'occupancy' ? 204 : 400);
+    if (route === 'plugin-config') assert.equal(response.body.error.code, 'invalid-operation');
+    assert.deepEqual(entry.options.config, {count: 0});
+  });
+}
+
+test('shared body accepts a complete but unread IncomingMessage', async t => {
+  const request = await fixture(t), path = '/dsh-go/v1/occupancy';
+  const gate = request.holdNextRoute(path); t.after(gate.resume);
+  const response = request(path, {method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({bootRev: 'b1', slots: {}})});
+  const {req} = await gate.arrived;
+  await until(() => req.complete, 'HTTP parser did not complete the request');
+  assert.equal(req.readableEnded, false);
+  assert.equal(req.aborted, false); assert.equal(req.destroyed, false);
+  gate.resume();
+  assert.equal((await response).status, 204);
+  await gate.done;
+});
 
 test('bridge business errors share a nested shape and retain HTTP status', async t => {
   const request = await fixture(t);
@@ -78,6 +160,56 @@ test('bridge business errors share a nested shape and retain HTTP status', async
   assert.equal(accepted.text, '');
 });
 
+test('inventory marks an earlier page report stale until the current graph reports', async t => {
+  let currentRev = 'g1';
+  const request = await fixture(t, {graph: () => ({rev: currentRev, entries: [{id: 'sample-plugin', rev: currentRev}]})});
+  const slots = {'settings.section': [{package: 'sample-plugin', cell: 'sample', order: 0, active: true}]};
+  const report = async bootRev => {
+    const response = await request('/dsh-go/v1/occupancy', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({bootRev, slots}),
+    });
+    assert.equal(response.status, 204);
+  };
+  const snapshot = async () => {
+    const response = await request('/dsh-go/v1/inventory');
+    assert.equal(response.status, 200);
+    return response.body;
+  };
+
+  const absent = await snapshot();
+  assert.equal(absent.currentRev, 'g1');
+  assert.equal(absent.slots, null);
+  assert.equal(absent.occupancy, null);
+
+  await report('g1');
+  const first = await snapshot();
+  assert.equal(first.bootRev, 'g1');
+  assert.equal(first.currentRev, 'g1');
+  assert.equal(first.occupancy.stale, false);
+
+  // A plugin change replaces the graph before another page reports its slots.
+  currentRev = 'g2';
+  const stale = await snapshot();
+  assert.equal(stale.bootRev, 'g1');
+  assert.equal(stale.currentRev, 'g2');
+  assert.equal(stale.occupancy.stale, true);
+  assert.deepEqual(stale.slots, first.slots, 'the stale table remains available for the consumer to judge');
+
+  await report('g2');
+  const refreshed = await snapshot();
+  assert.equal(refreshed.bootRev, 'g2');
+  assert.equal(refreshed.currentRev, 'g2');
+  assert.equal(refreshed.occupancy.stale, false);
+
+  // An already open g1 page may still post after the g2 page.
+  await report('g1');
+  const earlierPage = await snapshot();
+  assert.equal(earlierPage.bootRev, 'g1');
+  assert.equal(earlierPage.currentRev, 'g2');
+  assert.equal(earlierPage.occupancy.stale, true);
+});
+
 test('capabilities advertise implemented families independently of service availability', async t => {
   const request = await fixture(t);
   const response = await request('/dsh-go/v1/capabilities');
@@ -86,6 +218,7 @@ test('capabilities advertise implemented families independently of service avail
   assert.deepEqual(response.body, {v: 1, bridge: version, capabilities: [
     'inventory', 'occupancy', 'native-ui', 'native-stream', 'native-media', 'native-files',
     'plugin-config', 'session-deletion', 'companion', 'companion-prompt-context', 'companion-recall', 'companion-signals',
+    'speech',
   ]});
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.equal(response.headers.get('x-content-type-options'), 'nosniff');

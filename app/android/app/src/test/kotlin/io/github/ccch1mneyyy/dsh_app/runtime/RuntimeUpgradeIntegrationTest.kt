@@ -1,7 +1,9 @@
 package io.github.ccch1mneyyy.dsh_app.runtime
 
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
@@ -50,7 +52,10 @@ class RuntimeUpgradeIntegrationTest {
     @Test fun productionRouteKeepsTheEntireUserSystemForLegacyAndLayeredUpgrades() {
         for (layered in listOf(false, true)) {
             base.deleteRecursively(); base.mkdirs()
-            installed(layered); stage(); activate()
+            installed(layered); stage()
+            // A legacy swap can be killed during retired-tree cleanup, after its ready marker.
+            write("rootfs.old/usr/bin/retired-tool", "retired user tool")
+            activate()
             assertEquals("user gh", File(base, "rootfs/usr/bin/gh").readText())
             assertEquals("user package database", File(base, "rootfs/var/lib/dpkg/status").readText())
             assertEquals("user npm package", File(base, "rootfs/usr/local/lib/node_modules/user/index.js").readText())
@@ -58,7 +63,37 @@ class RuntimeUpgradeIntegrationTest {
             assertEquals("user work", File(base, "rootfs/root/workspace/project").readText())
             assertEquals("new engine", File(base, "rootfs/opt/dsh/version").readText())
             assertEquals("new", File(base, "rootfs.version").readText())
+            assertFalse(File(base, "rootfs.old").exists())
             assertFalse(File(base, "staging").exists())
+        }
+    }
+
+    @Test fun incompleteLegacySwapStillBlocksBeforeChangingAnyTree() {
+        for (state in listOf("missing-marker", "empty-marker", "torn-marker", "different-marker", "carry", "missing-root")) {
+            base.deleteRecursively(); base.mkdirs()
+            installed(false); stage()
+            val retired = write("rootfs.old/usr/bin/retired-tool", "retired user tool")
+            val marker = File(base, "rootfs.version")
+            when (state) {
+                "missing-marker" -> assertTrue(marker.delete())
+                "empty-marker" -> marker.writeText("")
+                "torn-marker" -> marker.writeText("ol")
+                "different-marker" -> marker.writeText("older")
+                "carry" -> write("home.carry/workspace/project", "carried user work")
+                "missing-root" -> assertTrue(File(base, "rootfs").deleteRecursively())
+            }
+            val before = if (marker.exists()) marker.readText() else null
+            val error = assertThrows(RuntimeUpgradeBlocked::class.java) { activate() }
+            assertEquals(state, "runtime_upgrade_blocked:legacy_interrupted", error.message)
+            assertEquals(state, before, if (marker.exists()) marker.readText() else null)
+            assertEquals("retired user tool", retired.readText())
+            assertTrue(File(base, "staging/opt/dsh/version").isFile)
+            assertFalse(File(base, "engine.upgrade").exists())
+            if (state == "missing-root") assertFalse(File(base, "rootfs").exists())
+            else assertEquals("user work", File(base, "rootfs/root/workspace/project").readText())
+            if (state == "carry") {
+                assertEquals("carried user work", File(base, "home.carry/workspace/project").readText())
+            }
         }
     }
 
@@ -78,6 +113,112 @@ class RuntimeUpgradeIntegrationTest {
         assertEquals("factory gh (must not replace the user copy)", File(base, "rootfs/usr/bin/gh").readText())
         assertEquals("factory package database", File(base, "rootfs/var/lib/dpkg/status").readText())
         assertEquals("new", File(base, "rootfs.version").readText())
+    }
+
+    @Test fun anUnmarkedPublishedRootFinishesWithoutAnotherStagingTree() {
+        for (layered in listOf(false, true)) {
+            base.deleteRecursively(); base.mkdirs()
+            if (layered) next.put("schema", 2).put("baseCompatibility", layerDescriptor())
+            stage()
+            write("kept/root/.dsh/dsh-go/ui.json", "saved ui")
+            val keep = File(base, "kept")
+            val failure = IOException("first install interrupted at data barrier")
+            assertSame(failure, assertThrows(IOException::class.java) {
+                activateRuntimeUpdate(base, "new", "arm64-v8a", next, keep, sync = { throw failure })
+            })
+            val marker = File(base, "rootfs.version")
+            val root = File(base, "rootfs")
+            val engine = File(root, "opt/dsh/version")
+            val rootInode = Files.getAttribute(root.toPath(), "unix:ino")
+            val engineInode = Files.getAttribute(engine.toPath(), "unix:ino")
+            assertFalse(Files.exists(marker.toPath(), NOFOLLOW_LINKS))
+            assertFalse(File(base, "staging").exists())
+            EngineUpgrade(base, sync = {}).recover()
+            var barriers = 0
+            assertTrue(resumeRootfsInstall(base, "new", "arm64-v8a", next, keep, sync = {
+                barriers++
+                assertFalse(Files.exists(marker.toPath(), NOFOLLOW_LINKS))
+                assertEquals("saved ui", File(root, "root/.dsh/dsh-go/ui.json").readText())
+            }))
+            assertEquals(1, barriers)
+            assertEquals("new", marker.readText())
+            assertEquals(rootInode, Files.getAttribute(root.toPath(), "unix:ino"))
+            assertEquals(engineInode, Files.getAttribute(engine.toPath(), "unix:ino"))
+            assertEquals("new engine", engine.readText())
+            assertFalse(keep.exists())
+            assertFalse(File(base, "staging").exists())
+        }
+    }
+
+    @Test fun resumingAnUnfinishedResetKeepsRestoredItemsAndPropagatesFailures() {
+        stage()
+        write("staging/root/.agents", "blocked parent")
+        write("kept/root/.dsh/dsh-go/ui.json", "saved ui")
+        write("kept/root/.agents/skills/mine/SKILL.md", "saved skill")
+        val keep = File(base, "kept")
+        val marker = File(base, "rootfs.version")
+        assertThrows(KeepFailed::class.java) { activate(keep) }
+        EngineUpgrade(base, sync = {}).recover()
+        assertThrows(KeepFailed::class.java) {
+            resumeRootfsInstall(base, "new", "arm64-v8a", next, keep, sync = { fail("data barrier reached") })
+        }
+        assertFalse(Files.exists(marker.toPath(), NOFOLLOW_LINKS))
+        assertEquals("saved ui", File(base, "rootfs/root/.dsh/dsh-go/ui.json").readText())
+        assertEquals("saved skill", File(keep, "root/.agents/skills/mine/SKILL.md").readText())
+        assertTrue(File(base, "rootfs/root/.agents").delete())
+        val failure = IOException("retry data barrier")
+        assertSame(failure, assertThrows(IOException::class.java) {
+            resumeRootfsInstall(base, "new", "arm64-v8a", next, keep, sync = { throw failure })
+        })
+        assertFalse(Files.exists(marker.toPath(), NOFOLLOW_LINKS))
+        assertTrue(resumeRootfsInstall(base, "new", "arm64-v8a", next, keep, sync = {}))
+        assertEquals("saved ui", File(base, "rootfs/root/.dsh/dsh-go/ui.json").readText())
+        assertEquals("saved skill", File(base, "rootfs/root/.agents/skills/mine/SKILL.md").readText())
+        assertEquals("new", marker.readText())
+        assertFalse(keep.exists())
+    }
+
+    @Test fun existingMarkersKeepSameVersionRepairsOnTheNormalInstallRoute() {
+        stage(); activate()
+        val marker = File(base, "rootfs.version")
+        // A launch error can require reinstalling this engine even with matching metadata.
+        assertTrue(File(base, "rootfs/opt/dsh/version").delete())
+        for (record in listOf("new", "", "ne", "old")) {
+            marker.writeText(record)
+            assertFalse(resumeRootfsInstall(base, "new", "arm64-v8a", next,
+                sync = { fail("must keep the normal install route") }))
+            assertEquals(record, marker.readText())
+            assertFalse(File(base, "rootfs/opt/dsh/version").exists())
+        }
+    }
+
+    @Test fun anUnmarkedTreeFromAnotherApkIsNotCommittedAsTheCurrentPayload() {
+        stage()
+        val previous = info("previous")
+        write("staging/etc/dsh-app/runtime.json", previous.toString())
+        assertThrows(IOException::class.java) {
+            activateRuntimeUpdate(base, "previous", "arm64-v8a", previous, sync = { throw IOException("kill") })
+        }
+        EngineUpgrade(base, sync = {}).recover()
+        val before = File(base, "rootfs/etc/dsh-app/runtime.json").readText()
+        assertFalse(resumeRootfsInstall(base, "new", "arm64-v8a", next,
+            sync = { fail("different payload must still be installed") }))
+        assertEquals(before, File(base, "rootfs/etc/dsh-app/runtime.json").readText())
+        assertFalse(Files.exists(File(base, "rootfs.version").toPath(), NOFOLLOW_LINKS))
+    }
+
+    @Test fun aMatchingPublishedTreeDoesNotBypassAnInterruptedLegacySwap() {
+        installed(true); stage()
+        assertThrows(IOException::class.java) {
+            activateRootfs(base, "new", sync = { throw IOException("kill") })
+        }
+        EngineUpgrade(base, sync = {}).recover()
+        assertFalse(resumeRootfsInstall(base, "new", "arm64-v8a", next,
+            sync = { fail("legacy swap must remain blocked") }))
+        assertEquals("new", JSONObject(File(base, "rootfs/etc/dsh-app/runtime.json").readText()).getString("runtimeVersion"))
+        assertEquals("user gh", File(base, "rootfs.old/usr/bin/gh").readText())
+        assertEquals("user work", File(base, "rootfs/root/workspace/project").readText())
+        assertFalse(Files.exists(File(base, "rootfs.version").toPath(), NOFOLLOW_LINKS))
     }
 
     @Test fun unfinishedResetRestoreIsRetriedBeforeCommittingTheReadyMarker() {

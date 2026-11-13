@@ -13,7 +13,9 @@
   "files": [
     "lib/index.js",
     "lib/plugin-config.js",
+    "lib/web-promise.js",
     "lib/session-deletion.js",
+    "lib/speech.js",
     "lib/config-source.js",
     "lib/client.js",
     "lib/companion/*.js",

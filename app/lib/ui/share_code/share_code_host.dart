@@ -41,7 +41,7 @@ Future<bool> openShareLink(BuildContext context, ShareLink link) async {
     if (!context.mounted) return true;
     await _open(context, decoded, origin: link.isGist ? ShareOrigin.gist : ShareOrigin.link);
   } catch (e) {
-    messenger?.showSnackBar(SnackBar(content: Text(shareOpenError(e))));
+    if (context.mounted) messenger?.showSnackBar(SnackBar(content: Text(shareOpenError(e))));
   }
   return true;
 }
@@ -51,11 +51,16 @@ Future<bool> openShareFile(BuildContext context, File file) async {
   final messenger = ScaffoldMessenger.maybeOf(context);
   try {
     if (await file.length() > maxConversationFileBytes * 2) throw const ShareDecodeException('file too large');
-    final decoded = await decodeShareImportBytes(await file.readAsBytes());
+    final DecodedShareImport decoded;
+    try {
+      decoded = await decodeShareImportBytes(await file.readAsBytes());
+    } on FormatException {
+      throw const FileSystemException('Failed to decode share file as UTF-8');
+    }
     if (!context.mounted) return true;
     await _open(context, decoded, origin: ShareOrigin.file);
   } catch (e) {
-    messenger?.showSnackBar(SnackBar(content: Text(shareOpenError(e))));
+    if (context.mounted) messenger?.showSnackBar(SnackBar(content: Text(shareOpenError(e))));
   }
   return true;
 }

@@ -40,6 +40,9 @@ import '../../notify/chat_alerts.dart' show CompanionAlertDelivery, companionHos
 import '../../pets/pet_mood.dart' show PetEvent, PetEventKind;
 import '../../pets/pet_signals.dart' show petEventBusProvider;
 import '../../pets/pet_state.dart';
+import '../../speech/speech_settings.dart';
+import '../../speech/voice_cloud.dart';
+import '../../state/app_mode_state.dart';
 import '../../state/chat_state.dart';
 import '../../state/connection_state.dart';
 import '../../state/hosts_state.dart';
@@ -52,10 +55,12 @@ import '../chat/voice/voice_controller.dart';
 import '../common/app_dialog.dart';
 import '../common/app_sheet.dart';
 import '../common/sheet_title_bar.dart';
+import '../modes/mode_switch.dart';
 import '../settings/settings_widgets.dart';
 import '../theme/app_icons.dart';
 import '../theme/app_theme.dart';
 import '../theme/surfaces.dart';
+import '../workshop/workshop_screen.dart';
 import 'companion_ask.dart';
 import 'companion_chrome.dart';
 import 'companion_log.dart';
@@ -104,7 +109,14 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
   CompanionPackStore? _store;
   CompanionCharacter _character = const CompanionCharacter();
   _Phase _phase = _Phase.checking;
+
+  /// Counts entries into the stage phase. It keys the stage, so coming back after a failure
+  /// or a new pack always builds a fresh one: a retired stage has no server and never restarts.
+  int _stageRun = 0;
   String? _failure;
+
+  /// The failed screen offers 重试: her pack is still on the phone.
+  bool _failedWithPack = false;
   bool _stageReady = false;
   bool _greetingPending = true;
   bool _installing = false;
@@ -312,6 +324,8 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
       input: _input,
       bridge: ref.read(voiceBridgeProvider),
       mode: () => ref.read(voiceSettingsProvider.notifier).ready(),
+      cloud: (mode) => ref.read(voiceCloudProvider)(mode),
+      cloudLikely: () => ref.read(voiceCloudLikelyProvider)(),
       modelReady: () =>
           mounted &&
           (ref.read(activeConnectionProvider).value?.isLocal ?? false) &&
@@ -324,11 +338,13 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
         });
       },
     );
+    // What dictation has to say (a notice, why it failed) comes in her bubble, not aloud.
+    _voice.onMessage = (message) => _say(message.text, aloud: false);
     _voice.addListener(_voiceChanged);
     _agentEvents = ref.read(petEventBusProvider).events.listen(_onAgentEvent);
     _speaker = ref.read(companionSpeakerProvider);
     _ttsEvents = _speaker.events.listen(_onTts);
-    ref.listenManual(companionVoiceSettingsProvider, (_, settings) {
+    ref.listenManual(companionEffectiveVoiceProvider, (_, settings) {
       if (settings != null) unawaited(_prepareVoice(settings));
     }, fireImmediately: true);
     _focus.addListener(_refreshMood);
@@ -556,6 +572,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
     final lines = switch ((zone, kind)) {
       (_, 'hug') => [l10n.companionHug1, l10n.companionHug2, l10n.companionHug3, if (close) l10n.companionHugClose],
       (_, 'tease') => [l10n.companionTease1, l10n.companionTease2, l10n.companionTease3],
+      (_, 'shake') => [l10n.companionShake1, l10n.companionShake2, l10n.companionShake3],
       (_, 'pat') => [l10n.companionPat1, l10n.companionPat2, l10n.companionPat3, if (close) l10n.companionPatClose],
       ('head', _) => [l10n.companionTapHead1, l10n.companionTapHead2],
       ('face', _) => [l10n.companionTapFace1, l10n.companionTapFace2, l10n.companionTapFace3],
@@ -568,6 +585,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
     _remember('pet', switch ((zone, kind)) {
       (_, 'hug') => '对方刚才抱了抱你',
       (_, 'tease') => '对方刚才连着戳你',
+      (_, 'shake') => '对方刚才摇晃手机，把你晃晕了',
       (_, 'pat') => '对方刚才摸了摸你的头',
       ('tail', _) => '对方刚才碰了你的尾巴',
       ('face', _) => '对方刚才戳了戳你的脸',
@@ -1185,7 +1203,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
 
   // ── Voice ────────────────────────────────────────────────────────────────
 
-  bool get _voiceOn => _ttsReady && (ref.read(companionVoiceSettingsProvider)?.on ?? false);
+  bool get _voiceOn => _ttsReady && (ref.read(companionEffectiveVoiceProvider)?.on ?? false);
 
   /// Ready to speak with [settings] (or silent when they are off).
   Future<void> _prepareVoice(CompanionVoiceSettings settings) async {
@@ -1221,7 +1239,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
     if (!mounted || !_ttsPending.containsKey(event.id)) return;
     switch (event.type) {
       case CompanionVoiceEventType.start:
-        final external = ref.read(companionVoiceSettingsProvider)?.source != CompanionVoiceSource.system;
+        final external = ref.read(companionEffectiveVoiceProvider)?.source != CompanionVoiceSource.system;
         if (event.loudness case final levels?) {
           // Fetched WAV: her mouth opens with the voice's own loudness.
           _stage.command('loudness', {'levels': levels, 'frameMs': 40});
@@ -2353,6 +2371,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
         _character = character;
         _failure = null;
         _stageReady = false;
+        _stageRun++;
         _phase = _Phase.stage;
       });
     } on CompanionPackException catch (error) {
@@ -2374,9 +2393,52 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
     }
   }
 
+  /// The stage failed: whether trying again makes sense is the pack's to say.
+  Future<void> _checkRetry() async {
+    final here = await _store?.installed() ?? false;
+    if (mounted && _phase == _Phase.failed) setState(() => _failedWithPack = here);
+  }
+
+  /// 重试 on the failed screen: a new stage (the failed one left the tree), for
+  /// whoever is in the pack now.
+  Future<void> _retryStage() async {
+    final store = _store;
+    if (store == null) return;
+    final character = await store.character();
+    if (!mounted || _phase != _Phase.failed) return;
+    setState(() {
+      _character = character;
+      _failure = null;
+      _stageReady = false;
+      _stageRun++;
+      _phase = _Phase.stage;
+    });
+  }
+
+  /// Back from the workshop. A companion installed or uninstalled there
+  /// changed the pack under her and the stage left: show whoever is in the
+  /// pack now, or the setup screen when nobody is.
+  Future<void> _afterWorkshop() async {
+    if (!mounted || _phase != _Phase.failed || _failure != companionStagePackChanged) return;
+    final here = await _store?.installed() ?? false;
+    if (!mounted || _phase != _Phase.failed || _failure != companionStagePackChanged) return;
+    if (here) {
+      await _retryStage();
+      return;
+    }
+    setState(() {
+      _phase = _Phase.setup;
+      _failure = null;
+      _stageReady = false;
+    });
+    _syncSignals();
+  }
+
   /// Why she couldn't load, in words: a model too new for the runtime says so.
   String _loadFailureText(L10n l10n) {
     final why = _failure ?? '';
+    // The stage's own reasons for leaving are not the person's to read.
+    if (why == companionStageRendererGone || why == companionStagePackChanged) return l10n.companionFailedBodyPlain;
     final version = RegExp(r'moc-version (\d+)/(\d+)').firstMatch(why);
     if (version != null) return l10n.companionFailedMocVersion(version[1]!, version[2]!);
     return l10n.companionFailedBody(why);
@@ -2698,6 +2760,9 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
                           tinted: false,
                           title: l10n.companionMenuVoice,
                           value: Text(switch (voice) {
+                            CompanionVoiceSettings(on: true, follow: true) => l10n.speechVoiceFollow,
+                            CompanionVoiceSettings(on: true, source: CompanionVoiceSource.deepseek) =>
+                              l10n.speechVoiceDeepseek,
                             CompanionVoiceSettings(on: true, source: CompanionVoiceSource.system) =>
                               l10n.companionVoiceSystem,
                             CompanionVoiceSettings(on: true, source: CompanionVoiceSource.preset) =>
@@ -2797,6 +2862,22 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
                           unawaited(_restart());
                         },
                       ),
+                    // 创意工坊: companions other people made. Only where this build has one to open.
+                    if (ref.read(workshopAvailableProvider))
+                      SettingsTile(
+                        icon: AppIcons.workshop,
+                        tinted: false,
+                        title: l10n.workshopTitle,
+                        subtitle: l10n.workshopEntrySubtitle,
+                        onTap: () {
+                          Navigator.of(sheet).pop();
+                          unawaited(
+                            Navigator.of(context)
+                                .push(MaterialPageRoute<void>(builder: (_) => const WorkshopScreen()))
+                                .then((_) => _afterWorkshop()),
+                          );
+                        },
+                      ),
                     SettingsTile(
                       icon: AppIcons.delete,
                       tinted: false,
@@ -2804,6 +2885,23 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
                       onTap: () {
                         Navigator.of(sheet).pop();
                         unawaited(_removePack());
+                      },
+                    ),
+                  ],
+                ),
+                // 模式: 工作 or 酒馆 from here, and which one a launch opens.
+                SheetGroup(
+                  margin: const EdgeInsets.fromLTRB(SheetTitleBar.inset, 0, SheetTitleBar.inset, 12),
+                  children: [
+                    SettingsTile(
+                      key: const ValueKey('companion-mode'),
+                      icon: AppIcons.modes,
+                      tinted: false,
+                      title: l10n.modeSheetTitle,
+                      value: Text(l10n.modeCompanionShort),
+                      onTap: () {
+                        Navigator.of(sheet).pop();
+                        unawaited(showModeSheet(context, current: AppMode.companion));
                       },
                     ),
                   ],
@@ -2881,7 +2979,15 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
       _probe = null;
     });
     _syncSignals();
-    await _store?.remove();
+    try {
+      await _store?.remove();
+    } on CompanionPackException catch (error) {
+      // Something still reads her files (a floating window that wouldn't let
+      // go): they stay, and the setup screen says so.
+      if (mounted) setState(() => _installError = _problemText(error.problem));
+    } on Object {
+      if (mounted) setState(() => _installError = context.l10n.companionPackStorage);
+    }
   }
 
   // ── Build ────────────────────────────────────────────────────────────────
@@ -2957,12 +3063,15 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
     final events = CompanionStageEvents(
       onReady: _onReady,
       onFailed: (why) {
-        if (!mounted) return;
+        // A stage already on its way out (her pack being removed) has no say.
+        if (!mounted || _phase != _Phase.stage) return;
         setState(() {
           _phase = _Phase.failed;
           _failure = why;
+          _failedWithPack = false;
         });
         _syncSignals();
+        unawaited(_checkRetry());
       },
       onTouch: _onTouch,
       onWake: () => _say(l10n.companionWake),
@@ -2986,7 +3095,7 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
               child: ExcludeSemantics(
                 child:
                     widget.stageBuilder?.call(_stage, events) ??
-                    CompanionStage(store: store, controller: _stage, events: events),
+                    CompanionStage(key: ValueKey(_stageRun), store: store, controller: _stage, events: events),
               ),
             ),
           if ((showStage && !_stageReady) || (_phase == _Phase.setup && _arriving))
@@ -3011,6 +3120,8 @@ class _CompanionPageState extends ConsumerState<CompanionPage> implements Compan
               busy: _installing,
               error: _installError,
               onAction: _import,
+              secondary: _failedWithPack ? l10n.commonRetry : null,
+              onSecondary: () => unawaited(_retryStage()),
             ),
           Positioned(
             top: padding.top + 8,

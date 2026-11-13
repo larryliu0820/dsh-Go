@@ -23,7 +23,9 @@ import { join } from "node:path";
 import { STATUS_CODES, get as httpGet } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createPluginConfig, pluginConfigUnavailable } from "./plugin-config.js";
+import { injectPromiseWithResolvers } from "./web-promise.js";
 import { createSessionDeletion, sessionDeletionUnavailable } from "./session-deletion.js";
+import { createSpeechRoutes } from "./speech.js";
 import { createCompanionRoutes } from "./companion/routes.js";
 import { createCompanionPromptContext, FULL_PRESET } from './companion/prompt-context.js';
 import { createCompanionStore } from "./companion/store.js";
@@ -44,6 +46,7 @@ const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.u
 const CAPABILITIES = [
   "inventory", "occupancy", "native-ui", "native-stream", "native-media", "native-files",
   "plugin-config", "session-deletion", "companion", "companion-prompt-context", "companion-recall", "companion-signals",
+  "speech",
 ];
 const ORIGINAL = Symbol.for("cordis.original");
 const GUARDED = Symbol.for("dsh-go.guarded");
@@ -135,6 +138,7 @@ function parseReport(body) {
 
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
+    if (req.aborted || req.destroyed) return reject(new Error("request body was interrupted"));
     const chunks = [];
     let size = 0;
     let over = false;
@@ -321,6 +325,8 @@ export function apply(ctx, config) {
   ctx.on("internal/status", (fiber) => { native.markDirty(); pluginConfig?.statusChanged(fiber); });
 
   ctx.inject(["webServer"], (webCtx) => {
+    webCtx.effect(() => webCtx.webServer.tapIndex(injectPromiseWithResolvers),
+      "dsh-go-bridge: browser Promise.withResolvers");
     const routeGuardMode = options.guardRoutes === false ? "off" : installFallbackGuard(webCtx, open);
 
     // Guard self-test: a credential-less request to an unauthenticated route registered like any
@@ -391,6 +397,8 @@ export function apply(ctx, config) {
     const nativeRoutes = createNativeRoutes(native);
     pluginConfig = createPluginConfig(webCtx, { readBody, send });
     const sessionDeletion = createSessionDeletion(webCtx, { readBody, send });
+    const speechRoutes = createSpeechRoutes(webCtx, { send, fetch: options.speech?.fetch, apiKeyEnv: options.speech?.apiKeyEnv });
+    webCtx.effect(() => () => speechRoutes.dispose(), "dsh-go-bridge: speech routes");
     const companionRoutes = createCompanionRoutes({ send, store: companionStore, recall: companionRecall, signals: companionSignals, ctx: webCtx, promptContext: companionPrompt });
     webCtx.effect(() => () => nativeRoutes.dispose(), "dsh-go-bridge: native routes");
     webCtx.effect(() => webCtx.webServer.registerUpgrade({
@@ -412,6 +420,7 @@ export function apply(ctx, config) {
       const path = url.pathname;
       if (await sessionDeletion.handle(req, res, path)) return;
       if (await pluginConfig.handle(req, res, path)) return;
+      if (await speechRoutes.handle(req, res, path)) return;
       if (await companionRoutes.handle(req, res, path)) return;
       if (path.startsWith(`${PREFIX}/v1/`) && await nativeRoutes.handle(req, res, path, url)) return;
       if (path === `${PREFIX}/v1/capabilities`) {

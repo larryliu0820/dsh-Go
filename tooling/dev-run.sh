@@ -17,7 +17,8 @@
 #
 # It installs with `adb install -r` and attaches, instead of `flutter run`, because a
 # failed `flutter run` install uninstalls the app and tries again, and that would take
-# the phone's keys and chats with it. Here a failed install stops, and changes nothing.
+# the phone's keys and chats with it. Here a failed install stops without uninstalling;
+# if adb loses the result, the phone may already have updated.
 # That takes the same signing key (app/android/key.properties) and a versionCode that
 # isn't lower: both are how build-apk.sh builds.
 #
@@ -29,7 +30,7 @@
 # D:/Tools/flutter-3.47.7/flutter), Python in DSH_PYTHON. Elsewhere, what's on PATH.
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ROOT=$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 APP="$ROOT/app"
 PKG=io.github.ccch1mneyyy.dsh_app
 APK="$APP/build/app/outputs/flutter-apk/app-arm64-debug.apk"
@@ -76,7 +77,7 @@ fi
 command -v adb >/dev/null || die "adb not found"
 
 # --- the device
-devices() { adb devices | awk 'NR > 1 && $2 == "device" { print $1 }'; }
+devices() { adb devices | tr -d '\r' | awk 'NR > 1 && $2 == "device" { print $1 }'; }
 if [[ -z $serial ]]; then
   found=$(devices)
   [[ -n $found ]] || die "no device: connect the phone, or pair it with adb pair"
@@ -114,7 +115,7 @@ if ((install)); then
   [[ -f $APK ]] || die "no debug APK at $APK: run without --no-build"
   before=$(installed_since)
   if ! phone install -r "$APK"; then
-    die "install failed, and nothing was changed. Is it signed with the phone's key (app/android/key.properties)? Never uninstall to get past this: the app's data goes with it."
+    die "install did not report success; the phone may already have updated. Reconnect and check the installed build before retrying. Is it signed with the phone's key (app/android/key.properties)? Never uninstall to get past this: the app's data goes with it."
   fi
   after=$(installed_since)
   [[ -z $before || $before == "$after" ]] || die "first install time moved ($before -> $after): the app was reinstalled"
@@ -127,7 +128,10 @@ grep -Eq 'flags=\[.*DEBUGGABLE' <<<"$package" ||
 # Attach finds the app by the address it logs when it starts, and only hears that once it
 # is listening: the app restarts a moment after attach is up, not before.
 (
-  sleep "${DSH_ATTACH_WAIT:-10}"
+  # Cancel and reap the waiting child before leaving this phase.
+  trap 'kill $(jobs -pr) 2>/dev/null || true; wait; exit 0' TERM
+  sleep "${DSH_ATTACH_WAIT:-10}" &
+  wait "$!"
   # Too late to call off: a stop with no launch after it would leave the app closed.
   trap '' TERM
   phone shell am force-stop "$PKG"

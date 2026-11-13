@@ -65,6 +65,7 @@ class MainActivity : FlutterActivity() {
             engine.plugins.add(io.github.ccch1mneyyy.dsh_app.icons.PictureShortcutPlugin())
             engine.plugins.add(io.github.ccch1mneyyy.dsh_app.usage.UsagePlugin())
             engine.plugins.add(io.github.ccch1mneyyy.dsh_app.companion.CompanionVoicePlugin())
+            engine.plugins.add(io.github.ccch1mneyyy.dsh_app.speech.SpeechPlugin())
             engine.plugins.add(io.github.ccch1mneyyy.dsh_app.companion.CompanionWidgetPlugin())
             engine.dartExecutor.executeDartEntrypoint(DartExecutor.DartEntrypoint.createDefault())
             cache.put(ENGINE_ID, engine)
@@ -209,14 +210,14 @@ class MainActivity : FlutterActivity() {
     // (Android 12's default for launcher roots): coming back finds it as it was.
     override fun popSystemNavigator(): Boolean = moveTaskToBack(true)
 
-    /** 设置 › 性能 › 刷新率; the Flutter side owns the stored choice. */
-    private var refreshMode = "auto"
-
     /** Flutter produced a frame recently (see RefreshRateService): auto mode follows it. */
     private var framesActive = true
 
     companion object {
         private const val ENGINE_ID = "dsh-main"
+
+        /** 设置 › 性能 › 刷新率; the Flutter side owns the stored choice. */
+        private var refreshMode = "auto"
 
         /** The app is on screen (resumed). */
         @Volatile var inForeground = false

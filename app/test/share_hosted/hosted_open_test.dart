@@ -13,6 +13,7 @@ import 'package:dsh_app/share_hosted/hosted_config.dart';
 import 'package:dsh_app/share_hosted/hosted_crypto.dart';
 import 'package:dsh_app/share_hosted/hosted_link.dart';
 import 'package:dsh_app/share_hosted/hosted_links_state.dart';
+import 'package:dsh_app/state/settings_state.dart';
 import 'package:dsh_app/ui/replay/conversation_out.dart' show ManageLinksButton;
 import 'package:dsh_app/ui/replay/replay_page.dart';
 import 'package:dsh_app/ui/share_hosted/hosted_links_page.dart';
@@ -106,6 +107,7 @@ void main() {
             },
           ),
           overrides: [
+            settingsProvider.overrideWith(() => TestSettings()),
             hostedShareClientProvider.overrideWithValue(HostedShareClient(client: host.client)),
             hostedLinkStoreProvider.overrideWithValue(MemoryStore()),
           ],

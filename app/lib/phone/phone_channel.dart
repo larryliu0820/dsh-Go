@@ -239,57 +239,6 @@ enum PhoneBackgroundViewport {
   }
 }
 
-/// Physical cleanup of the original settings probe; this is not a new probe action.
-class PhoneGateCleanup {
-  const PhoneGateCleanup({required this.state, required this.canRetry, this.handle});
-  final String state;
-  final bool canRetry;
-  final String? handle;
-  bool get blocked => state != 'idle';
-
-  static PhoneGateCleanup? parse(Object? value) {
-    if (value is! Map || value['v'] is! int || value['v'] != 1 ||
-        value['canRetry'] is! bool ||
-        !const {'idle', 'pending', 'cleaning', 'unknown'}.contains(value['state'])) {
-      return null;
-    }
-    final state = value['state'] as String;
-    final handle = value['handle'];
-    if (state == 'idle') {
-      if (handle != null || value['canRetry'] != false) return null;
-      return const PhoneGateCleanup(state: 'idle', canRetry: false);
-    }
-    if (handle is! String || handle.isEmpty || handle.length > 128 ||
-        (state != 'unknown' && value['canRetry'] == true)) {
-      return null;
-    }
-    return PhoneGateCleanup(state: state, canRetry: value['canRetry'] as bool, handle: handle);
-  }
-}
-
-/// Physical-resource recovery is independent of acknowledging a logical task interruption.
-class PhoneResourceRecovery {
-  const PhoneResourceRecovery({required this.state, required this.count, required this.canRetry, this.reason});
-  final String state;
-  final int count;
-  final bool canRetry;
-  final String? reason;
-  bool get blocked => state != 'clear';
-
-  static PhoneResourceRecovery? parse(Object? value) {
-    if (value is! Map || value['v'] is! int || value['v'] != 1 ||
-        value['count'] is! int || (value['count'] as int) < 0 || (value['count'] as int) > 256 ||
-        value['canRetry'] is! bool ||
-        !const {'loading', 'clear', 'pending', 'error', 'recovering'}.contains(value['state']) ||
-        value['reason'] != null && value['reason'] is! String) {
-      return null;
-    }
-    if (value['state'] == 'recovering' && value['canRetry'] == true) return null;
-    return PhoneResourceRecovery(state: value['state'] as String, count: value['count'] as int,
-      canRetry: value['canRetry'] as bool, reason: value['reason'] as String?);
-  }
-}
-
 /// Native admission capacity, independent of the legacy global parallelLimit field.
 class BackgroundParallelism {
   const BackgroundParallelism._(this.configuredLimit, this.effectiveLimit, this.heldSlots, this.reason);
@@ -310,9 +259,8 @@ class BackgroundParallelism {
         held is! int || held < 0 || held > 3) {
       return null;
     }
-    if (reason != null && !const {
-      'off', 'unsupported', 'connectionRequired', 'busy', 'resourceRecovery', 'peerUnsupported', 'transportSerial',
-    }.contains(reason)) {
+    if (reason != null &&
+        !const {'off', 'unsupported', 'connectionRequired', 'busy', 'transportSerial'}.contains(reason)) {
       return null;
     }
     if (effective == 0 && reason == null) return null;
@@ -333,8 +281,7 @@ class PhoneBackgroundStatus {
     this.viewport,
     this.previewVersion,
     this.previewEnabled = false,
-    this.gateCleanup,
-    this.resourceRecovery,
+    this.selfCheckWarning,
     this.parallelism,
   });
 
@@ -350,8 +297,7 @@ class PhoneBackgroundStatus {
     viewport: PhoneBackgroundViewport.fromMap(_map(m['viewport'])),
     previewVersion: _int(_map(m['preview'])['v']),
     previewEnabled: _flag(_map(m['preview'])['enabled']),
-    gateCleanup: PhoneGateCleanup.parse(m['gateCleanup']),
-    resourceRecovery: PhoneResourceRecovery.parse(m['resourceRecovery']),
+    selfCheckWarning: _text(m['selfCheckWarning']),
     parallelism: BackgroundParallelism.parse(m['parallelism']),
   );
 
@@ -372,8 +318,8 @@ class PhoneBackgroundStatus {
   final PhoneBackgroundViewport? viewport;
   final int? previewVersion;
   final bool previewEnabled;
-  final PhoneGateCleanup? gateCleanup;
-  final PhoneResourceRecovery? resourceRecovery;
+  /// The settings self-check did not pass. Only a note: the channel stays ready and usable.
+  final String? selfCheckWarning;
   final BackgroundParallelism? parallelism;
 
   PhonePrivilegedMode get effectiveMode =>
@@ -434,6 +380,7 @@ class PhoneTaskStatus {
     this.paused = false,
     this.stopped = false,
     this.interrupted,
+    this.stopSource,
     this.waived = false,
   });
 
@@ -460,6 +407,7 @@ class PhoneTaskStatus {
     paused: _flag(m['paused']),
     stopped: _flag(m['stopped']),
     interrupted: m.containsKey('interrupted') ? _flag(m['interrupted']) : null,
+    stopSource: m.containsKey('stopSource') ? (_text(m['stopSource']) ?? 'UNKNOWN') : null,
     waived: _flag(m['waived']),
   );
 
@@ -492,14 +440,16 @@ class PhoneTaskStatus {
   final String? app;
   final bool paused;
 
-  /// The person pressed 停止 (overlay or notification); native refuses phone
-  /// actions for a short while after. The app cancels the running turn.
+  /// Native refuses phone actions after a user stop or an ambient interruption.
   final bool stopped;
 
   /// Whether this stop cut off a phone task that was running, recorded by native at the
   /// moment it stopped. Null only from an older native that doesn't report it; a present
   /// value of the wrong type is false, never a reason to guess.
   final bool? interrupted;
+
+  /// USER, SCREEN_OFF or ENVIRONMENT; null only when absent on older native.
+  final String? stopSource;
 
   /// 本任务免确认 was granted: the rest of this task asks nothing.
   final bool waived;
@@ -1454,11 +1404,6 @@ class PhoneChannel {
       return ScreenTestResult(ok: false, reason: e.message ?? e.code);
     }
   }
-
-  Future<PhoneResult> retryBackgroundRecovery() => _result('retryBackgroundRecovery');
-
-  Future<PhoneResult> retryBackgroundGateCleanup(String handle) =>
-      _result('retryBackgroundGateCleanup', {'v': 1, 'handle': handle});
 
   Future<PhoneResult> setBackgroundMode(PhoneBackgroundMode mode) => _result('setBackgroundMode', {'mode': mode.name});
 

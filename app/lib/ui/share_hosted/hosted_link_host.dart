@@ -36,6 +36,7 @@ Future<bool> openHostedLink(BuildContext context, Uri uri) async {
   // Quiet unless it takes a moment.
   var hinted = false;
   final hint = Timer(const Duration(milliseconds: 600), () {
+    if (!context.mounted) return;
     hinted = true;
     messenger?.showSnackBar(SnackBar(content: Text(l10n.remoteOpening), duration: const Duration(seconds: 20)));
   });
@@ -43,13 +44,15 @@ Future<bool> openHostedLink(BuildContext context, Uri uri) async {
     final bytes = await container.read(hostedShareClientProvider).download('${ref.origin}/c/${ref.id}#k=${ref.key}');
     final conversation = await decodeConversationImportBytes(bytes);
     hint.cancel();
-    if (hinted) messenger?.hideCurrentSnackBar();
+    if (hinted && messenger?.mounted == true) messenger!.hideCurrentSnackBar();
     if (!context.mounted) return true;
     await openConversationReplay(context, conversation);
   } catch (e) {
     hint.cancel();
-    if (hinted) messenger?.hideCurrentSnackBar();
-    messenger?.showSnackBar(SnackBar(content: Text(hostedOpenError(e))));
+    if (hinted && messenger?.mounted == true) messenger!.hideCurrentSnackBar();
+    if (context.mounted) {
+      messenger?.showSnackBar(SnackBar(content: Text(hostedOpenError(e))));
+    }
   }
   return true;
 }

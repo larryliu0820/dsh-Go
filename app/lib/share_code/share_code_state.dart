@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/connection_state.dart';
@@ -34,7 +35,7 @@ Future<DecodedShareImport> resolveShareImport(ShareLink link, ShareNet net) asyn
 Future<String> fetchShareLinkText(ShareLink link, ShareNet net) async {
   if (!link.isGist) return link.code!;
   final text = await net.fetchGist(link.gistId!);
-  final code = _codeOf(text);
+  final code = await compute(_codeOf, text);
   if (code == null || !code.endsWith('.${link.gistSum}')) throw const ShareDecodeException('gist changed');
   return text;
 }

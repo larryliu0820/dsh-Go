@@ -29,6 +29,10 @@ class BuildApkRuntimeTest(unittest.TestCase):
         for name in ("build-apk.sh", "build_number.py", "check_runtime_bundle.py"):
             shutil.copy2(ROOT / "tooling" / name, self.root / "tooling" / name)
         (self.root / "app/pubspec.yaml").write_text("version: 1.0.0+1\n")
+        # Stand-in for runtime/tawcroot/build.py: TAWCROOT_EXIT decides whether it "builds".
+        tawcroot = self.root / "runtime/tawcroot"
+        tawcroot.mkdir(parents=True)
+        (tawcroot / "build.py").write_text("import os, sys\nsys.exit(int(os.environ.get('TAWCROOT_EXIT', '0')))\n")
         self.calls_file = self.root / "flutter-calls.jsonl"
         tools = self.root / "bin"
         tools.mkdir()
@@ -162,6 +166,15 @@ apk.write_bytes(b'fake APK: shell flow only')
                 path.write_text(json.dumps(data))
                 self.assert_blocked(self.run_script(), message)
 
+    def test_release_needs_libtawcroot_and_debug_goes_on_without_it(self):
+        self.make_bundle("arm64", 2)
+        self.env["TAWCROOT_EXIT"] = "1"
+        self.assert_blocked(self.run_script("--release", "-f", "arm64"), "libtawcroot.so did not build")
+        result = self.run_script("--debug", "-f", "arm64")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("tawcroot launch option will be unavailable", result.stderr)
+        self.assertEqual(len(self.calls()), 1)
+
     def test_debug_and_profile_keep_allowing_no_runtime(self):
         for mode in ("debug", "profile"):
             with self.subTest(mode=mode):
@@ -174,6 +187,26 @@ apk.write_bytes(b'fake APK: shell flow only')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [])
         self.assertEqual(result.stdout.count("flutter build apk"), 2)
+
+    def test_leading_zero_build_number_uses_one_decimal_value(self):
+        result = self.run_script("--debug", "-n", "00010251234")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.calls()), 1)
+        args = self.calls()[0]
+        self.assertEqual(args[args.index("--build-number") + 1], "10251234")
+        self.assertIn("--dart-define=DSH_APP_VERSION=1.0.0+10251234", args)
+        # The existing fake aapt2 returns integer metadata 10251234; the actual
+        # shell has completed its readback check, without running Flutter/Gradle.
+
+    def test_placeholder_build_number_is_rejected_before_flutter(self):
+        for value in ("1", "0001"):
+            with self.subTest(value=value):
+                self.assert_blocked(self.run_script("--debug", "-n", value), "reserved")
+
+    def test_invalid_custom_build_number_is_rejected_before_flutter(self):
+        for value in ("0", "0000", "2100000001"):
+            with self.subTest(value=value):
+                self.assert_blocked(self.run_script("--debug", "-n", value), "versionCode must be")
 
     def test_extra_mode_flags_cannot_bypass_the_release_gate(self):
         for arg in ("--release", "--profile", "--debug", "--no-debug", "--release=true"):

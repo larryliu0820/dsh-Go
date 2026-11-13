@@ -208,44 +208,38 @@ class _WebSocketMuxLink implements DshMuxLink {
   @override
   void start({required DshMuxFrameHandler onFrame, required DshMuxLossHandler onLost}) {
     _onLost = onLost;
-    // asyncMap pauses the socket while a large baseline is decoded. A small
-    // delta/end behind it must never overtake it, nor start a worker per frame.
-    _socket
-        .asyncMap((data) async {
-          if (_lost) return null;
-          if (data is! String) throw const DshProtocolException('binary WebSocket message');
-          return asMap(await tryDecodeJsonAsync(data));
-        })
-        .listen(
-          (frame) {
-            if (_lost) return;
-            final streamId = asString(frame?['streamId']);
-            final type = asString(frame?['type']);
-            if (frame == null ||
-                streamId == null ||
-                streamId.isEmpty ||
-                (type != 'item' && type != 'end' && type != 'error')) {
-              _protocolFailure('invalid Remote stream frame');
-              return;
-            }
-            _tracer?.call(DshTraceEntry('in', 'mux', frame));
-            onFrame(frame);
-          },
-          onError: (Object error) {
-            if (error is DshProtocolException) {
-              _protocolFailure(error.message);
-            } else {
-              _lose(DshCarrierLostException('WebSocket error: $error'), null);
-            }
-          },
-          onDone: () => _lose(
-            DshCarrierLostException(
-              'WebSocket closed (${_socket.closeCode ?? 'no code'} ${_socket.closeReason ?? ''})'.trim(),
-            ),
-            null,
-          ),
-          cancelOnError: true,
-        );
+    final frames = _socket.asyncMap((data) => _lost ? null : _decodeMuxFrame(data));
+    frames.listen(
+      (decoded) {
+        if (_lost) return;
+        final frame = asMap(decoded);
+        final streamId = asString(frame?['streamId']);
+        final type = asString(frame?['type']);
+        if (frame == null ||
+            streamId == null ||
+            streamId.isEmpty ||
+            (type != 'item' && type != 'end' && type != 'error')) {
+          _protocolFailure('invalid Remote stream frame');
+          return;
+        }
+        _tracer?.call(DshTraceEntry('in', 'mux', frame));
+        onFrame(frame);
+      },
+      onError: (Object error) {
+        if (error is DshProtocolException) {
+          _protocolFailure(error.message);
+        } else {
+          _lose(DshCarrierLostException('WebSocket error: $error'), null);
+        }
+      },
+      onDone: () => _lose(
+        DshCarrierLostException(
+          'WebSocket closed (${_socket.closeCode ?? 'no code'} ${_socket.closeReason ?? ''})'.trim(),
+        ),
+        null,
+      ),
+      cancelOnError: true,
+    );
   }
 
   void _lose(DshCarrierLostException failure, Object? cause) {
@@ -282,4 +276,11 @@ class _WebSocketMuxLink implements DshMuxLink {
     _lost = true;
     await _socket.close(code, reason);
   }
+}
+
+FutureOr<Object?> _decodeMuxFrame(Object? data) {
+  if (data is! String) throw const DshProtocolException('binary WebSocket message');
+  // asyncMap preserves control-frame ordering around a large snapshot's worker.
+  if (data.length < 256 * 1024) return tryDecodeJson(data);
+  return tryDecodeJsonAsync(data);
 }

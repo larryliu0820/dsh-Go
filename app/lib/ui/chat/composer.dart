@@ -44,6 +44,7 @@ class Composer extends StatefulWidget {
     required this.onSend,
     required this.onStop,
     this.focusNode,
+    this.groupId = EditableText,
     this.busy = false,
     this.stopping = false,
     this.sessionReady = true,
@@ -61,10 +62,15 @@ class Composer extends StatefulWidget {
     this.onContentInserted,
     this.maxLines = 6,
     this.hardwareEnterSends = false,
+    this.sendWhenEmpty = false,
+    this.emptySendLabel,
   });
 
   final TextEditingController controller;
   final FocusNode? focusNode;
+
+  /// The text field and its attached controls share this tap region.
+  final Object groupId;
 
   /// 已连上 DSH。没连上时可以先打字,但发不出去。
   final bool connected;
@@ -130,6 +136,12 @@ class Composer extends StatefulWidget {
   /// Opt-in physical Enter-to-send; never changes the software IME action.
   final bool hardwareEnterSends;
 
+  /// An empty box sends too (the tavern: the character speaks next). The key
+  /// is drawn quietly then, and labelled [emptySendLabel]; the mic, when
+  /// there is one, still comes first.
+  final bool sendWhenEmpty;
+  final String? emptySendLabel;
+
   /// Shown beside the keys while the field is being typed in: the capsule opens into a
   /// rounded rectangle, the text on a line of its own and the keys and this in a row
   /// below. It closes again when the keyboard goes. Null: the capsule stays as it is.
@@ -164,6 +176,13 @@ const double _fontSize = 15.0;
 
 class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin {
   Duration? _lastEscape;
+  // Keep the editor and its input connection when the footer changes the layout.
+  final _fieldKey = GlobalKey();
+  late final _draftEmpty = ValueNotifier(widget.controller.text.trim().isEmpty);
+
+  void _draftChanged() {
+    _draftEmpty.value = widget.controller.text.trim().isEmpty;
+  }
 
   // One value for everything that moves when the composer opens: the corners, the text's
   // width, the height, the keys and the footer's fade. One motion, not several in step.
@@ -248,7 +267,7 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
         (widget.hardwareEnterSends && !keys.isShiftPressed && !keys.isAltPressed);
     if (sendEnter && (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter)) {
       if (event is KeyRepeatEvent) return KeyEventResult.handled;
-      final draft = widget.controller.text.trim().isNotEmpty || widget.hasAttachments;
+      final draft = widget.controller.text.trim().isNotEmpty || widget.hasAttachments || widget.sendWhenEmpty;
       final dictating = widget.voice?.active ?? false;
       if (draft && widget.connected && !widget.busy && !dictating) _send();
       return KeyEventResult.handled;
@@ -274,6 +293,7 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    widget.controller.addListener(_draftChanged);
     widget.voice?.onMessage = _voiceMessage;
     widget.focusNode?.addListener(_focusChanged);
   }
@@ -281,6 +301,11 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
   @override
   void didUpdateWidget(Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller.removeListener(_draftChanged);
+      widget.controller.addListener(_draftChanged);
+      _draftChanged();
+    }
     if (oldWidget.sessionReady != widget.sessionReady ||
         oldWidget.connected != widget.connected ||
         oldWidget.running != widget.running ||
@@ -309,6 +334,8 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
 
   @override
   void dispose() {
+    widget.controller.removeListener(_draftChanged);
+    _draftEmpty.dispose();
     widget.focusNode?.removeListener(_focusChanged);
     _openController.dispose();
     if (widget.voice?.onMessage == _voiceMessage) {
@@ -367,15 +394,18 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
       child: _ComposerGlass(
         open: widget.footer == null ? null : _open,
         child: ListenableBuilder(
-          listenable: Listenable.merge([widget.controller, ?voice]),
+          // The editor listens to text, selection and composing changes itself.
+          // Its surrounding controls only need the draft's empty/nonempty edge.
+          listenable: Listenable.merge([_draftEmpty, ?voice]),
           builder: (context, _) {
-            final value = widget.controller.value;
             final phase = voice?.phase ?? VoicePhase.idle;
             final dictating = phase == VoicePhase.listening || phase == VoicePhase.transcribing;
-            final empty = value.text.trim().isEmpty && !widget.hasAttachments;
+            final empty = _draftEmpty.value && !widget.hasAttachments;
             final showStop = widget.running && empty && !dictating;
             final showMic = !dictating && !showStop && empty && !widget.busy && (voice?.available ?? false);
-            final enabled = !widget.busy && widget.connected && widget.sessionReady && (showStop || !empty);
+            final enabled =
+                !widget.busy && widget.connected && widget.sessionReady && (showStop || !empty || widget.sendWhenEmpty);
+            final emptySend = empty && widget.sendWhenEmpty && !showStop && !showMic && !dictating;
             final waiting = widget.waiting || widget.waitHint != null;
             final hint = switch (phase) {
               VoicePhase.listening => l10n.chatListeningEllipsis,
@@ -424,6 +454,7 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
                     child: KeyedSubtree(key: ValueKey(dictating), child: leading),
                   );
             final field = Focus(
+              key: _fieldKey,
               canRequestFocus: false,
               skipTraversal: true,
               onKeyEvent: _hardwareKey,
@@ -435,6 +466,7 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
                 skipTraversal: true,
                 onKeyEvent: widget.onKeyEvent,
                 child: TextField(
+                  groupId: widget.groupId,
                   controller: widget.controller,
                   focusNode: widget.focusNode,
                   contentInsertionConfiguration: switch (widget.onContentInserted) {
@@ -474,7 +506,8 @@ class _ComposerState extends State<Composer> with SingleTickerProviderStateMixin
             final sendKey = _SendButton(
               mode: mode,
               busy: keyBusy,
-              quiet: showStop && waiting && !widget.stopping,
+              quiet: (showStop && waiting && !widget.stopping) || emptySend,
+              sendLabel: emptySend ? widget.emptySendLabel : null,
               enabled: switch (mode) {
                 _KeyMode.mic => true,
                 _KeyMode.stopVoice => phase == VoicePhase.listening,
@@ -779,9 +812,13 @@ class _SendButton extends StatefulWidget {
     required this.onTap,
     this.onLongPress,
     this.quiet = false,
+    this.sendLabel,
   });
 
   final _KeyMode mode;
+
+  /// In place of 发送, for what sending does just now.
+  final String? sendLabel;
 
   /// Drawn like the mic key (something else on screen is primary).
   final bool quiet;
@@ -817,7 +854,7 @@ class _SendButtonState extends State<_SendButton> {
         ? colors.onPrimary
         : colors.onSurface.withValues(alpha: 0.38);
     final (icon, size, label) = switch (mode) {
-      _KeyMode.send => (AppIcons.send, 20.0, l10n.commonSend),
+      _KeyMode.send => (AppIcons.send, 20.0, widget.sendLabel ?? l10n.commonSend),
       _KeyMode.stopRun => (AppIcons.stopGenerating, 18.0, l10n.chatStopGenerating),
       _KeyMode.mic => (AppIcons.voice, 20.0, l10n.chatVoiceInput),
       _KeyMode.stopVoice => (AppIcons.stopGenerating, 18.0, l10n.chatStopVoiceInput),

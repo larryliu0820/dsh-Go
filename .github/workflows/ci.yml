@@ -184,7 +184,7 @@ jobs:
       - *checkout
       - *flutter
       - run: |
-          for pkg in packages/dsh_client packages/dsh_remote; do
+          for pkg in packages/dsh_client packages/dsh_remote packages/dsh_tavern; do
             (cd "$pkg" && dart pub get --enforce-lockfile && dart analyze && dart test)
           done
       - name: Install OpenSSH for transport interoperability tests
@@ -221,7 +221,7 @@ jobs:
           path: |
             ${{ runner.temp }}/dsh
             ${{ runner.temp }}/pnpm
-          key: runtime-prefixes-v1-${{ runner.os }}-${{ runner.arch }}-node${{ env.NODE_VERSION }}-${{ hashFiles('runtime/locks/**/package*.json', 'runtime/patches/**', 'runtime/session-deletion/**', 'runtime/lib/rtbuild.py', 'runtime/build-runtime.sh') }}
+          key: runtime-prefixes-v1-${{ runner.os }}-${{ runner.arch }}-node${{ env.NODE_VERSION }}-${{ hashFiles('.github/workflows/ci.yml', 'runtime/locks/**/package*.json', 'runtime/patches/**', 'runtime/session-deletion/**', 'runtime/lib/rtbuild.py', 'runtime/build-runtime.sh') }}
       - name: Install a throwaway patched DSH
         if: steps.runtime-prefixes.outputs.cache-hit != 'true'
         run: |

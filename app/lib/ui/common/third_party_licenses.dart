@@ -27,6 +27,8 @@ void registerThirdPartyLicenses() {
       LicenseEntryWithLineBreaks(<String>['Bouncy Castle'], _bouncyCastle),
       LicenseEntryWithLineBreaks(<String>['XZ for Java'], _xzForJava0bsd),
       LicenseEntryWithLineBreaks(<String>['AndroidX WebKit'], _androidxWebkitNotice + _apache2),
+      // Native launcher built from source (runtime/tawcroot/build.py).
+      LicenseEntryWithLineBreaks(<String>['tawcroot (tawc)'], _tawcMit),
       // flutter_webrtc's own MIT licence comes with its pub package; these are its NOTICE and
       // the native WebRTC it bundles.
       LicenseEntryWithLineBreaks(<String>['flutter_webrtc'], _flutterWebrtcNotice + _apache2),
@@ -45,6 +47,14 @@ void registerThirdPartyLicenses() {
     yield LicenseEntryWithLineBreaks(<String>['WebRTC'], '$_webrtcBsd\n$bundledNotices');
     final unicodeNotice = await rootBundle.loadString('assets/licenses/unicode-15.0.txt');
     yield LicenseEntryWithLineBreaks(<String>['Unicode Character Database (15.0.0)'], unicodeNotice);
+    // The libraries a card's scripts find on the tavern's canvas page, as 酒馆助手's pages
+    // give them; each package's own LICENSE file, verbatim.
+    yield LicenseEntryWithLineBreaks(<String>[
+      'jQuery',
+    ], await rootBundle.loadString('assets/licenses/jquery-3.7.1-LICENSE.txt'));
+    yield LicenseEntryWithLineBreaks(<String>[
+      'Lodash',
+    ], await rootBundle.loadString('assets/licenses/lodash-4.17.21-LICENSE.txt'));
   });
 }
 
@@ -124,6 +134,14 @@ Copyright (c) 2026 qiannianhuanxiang
 $_mitTerms''';
 
 /// Shizuku-API (`dev.rikka.shizuku:api`, `provider`).
+/// tawc's tawcroot launcher (libtawcroot.so), commit a49a4075; everything outside tawc's deps/ is MIT.
+const _tawcMit = '''
+MIT License
+
+Copyright (c) 2026 Sophie Winter
+
+$_mitTerms''';
+
 const _shizukuMit = '''
 MIT License
 

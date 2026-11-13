@@ -339,6 +339,10 @@ abstract final class AppIcons {
   static const workflow = DshGlyphs.flowArrow;
   static const todo = DshGlyphs.listChecks;
   static const goal = DshGlyphs.flag;
+
+  /// 创意工坊: the place itself, and reporting an item there (ui/workshop).
+  static const workshop = DshGlyphs.package;
+  static const report = DshGlyphs.flag;
   static const plan = DshGlyphs.mapTrifold;
   static const planMode = DshGlyphs.mapTrifold;
   static const jobs = DshGlyphs.clipboardText;
@@ -371,6 +375,21 @@ abstract final class AppIcons {
   /// 伙伴小屋: her words read aloud (companion_voice.dart). Not the microphone: that is the person's voice.
   static const companionVoice = DshGlyphs.musicNote;
 
+  /// 朗读: a reply read aloud (speech/read_aloud.dart); also the loudspeaker during a call.
+  static const readAloud = DshGlyphs.speakerHigh;
+
+  /// 语音通话: start a call with the conversation (speech/call/).
+  static const call = DshGlyphs.phone;
+
+  /// 语音通话: hang up.
+  static const hangUp = DshGlyphs.phoneDisconnect;
+
+  /// 语音通话: the microphone is muted.
+  static const micMuted = DshGlyphs.microphoneSlash;
+
+  /// 语音通话: the voice plays at the ear (earpiece), not on the loudspeaker.
+  static const earpiece = DshGlyphs.ear;
+
   /// 「问 AI」: a question about the app for the agent (ui/common/ask_ai.dart).
   static const askAi = DshGlyphs.sparkle;
 
@@ -389,6 +408,17 @@ abstract final class AppIcons {
 
   /// 设置 › 宠物.
   static const pet = DshGlyphs.smiley;
+
+  /// 模式 › 酒馆 (role play).
+  static const tavern = DshGlyphs.bookOpen;
+  static const lorebook = DshGlyphs.globe;
+  static const textSpeed = DshGlyphs.cursorText;
+  static const tavernContext = DshGlyphs.clockCounterClockwise;
+  static const tavernReplyLength = DshGlyphs.textAlignLeft;
+  static const tavernTemperature = DshGlyphs.slidersHorizontal;
+
+  /// The drawer's key to 模式.
+  static const modes = DshGlyphs.stack;
 
   /// 设置 › 隐私与分享.
   static const privacy = DshGlyphs.lockKey;
@@ -464,6 +494,9 @@ abstract final class AppIcons {
   static const playVideo = DshGlyphs.playCircle;
   static const mail = DshGlyphs.envelopeSimple;
   static const write = DshGlyphs.notePencil;
+
+  /// 接着写: the reply keeps talking (not an arrow, which reads as send).
+  static const continueReply = DshGlyphs.chatCenteredDots;
   static const featured = DshGlyphs.sparkle;
   static const bug = DshGlyphs.bug;
   static const school = DshGlyphs.graduationCap;

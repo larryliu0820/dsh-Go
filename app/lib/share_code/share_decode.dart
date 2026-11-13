@@ -2,7 +2,6 @@
 // DEFLATE, checksums, JSON, entry validation and picture decoding stay together.
 
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 

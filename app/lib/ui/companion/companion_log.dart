@@ -30,11 +30,14 @@ const companionLogYouTone = Color(0xFF9FD8F2);
 /// One line of the log.
 @immutable
 class CompanionLogEntry {
-  const CompanionLogEntry.her(this.text) : speaker = CompanionLogSpeaker.her, code = false;
-  const CompanionLogEntry.you(this.text) : speaker = CompanionLogSpeaker.you, code = false;
+  const CompanionLogEntry.her(this.text, {this.who, this.tone}) : speaker = CompanionLogSpeaker.her, code = false;
+  const CompanionLogEntry.you(this.text) : speaker = CompanionLogSpeaker.you, code = false, who = null, tone = null;
 
   /// What she did, not said: [text] is the verb and what it was done to.
-  const CompanionLogEntry.did(this.text, {this.code = false}) : speaker = CompanionLogSpeaker.narration;
+  const CompanionLogEntry.did(this.text, {this.code = false})
+    : speaker = CompanionLogSpeaker.narration,
+      who = null,
+      tone = null;
 
   final CompanionLogSpeaker speaker;
   final String text;
@@ -42,12 +45,22 @@ class CompanionLogEntry {
   /// Narration whose subject is a command or a path (set in monospace).
   final bool code;
 
-  @override
-  bool operator ==(Object other) =>
-      other is CompanionLogEntry && other.speaker == speaker && other.text == text && other.code == code;
+  /// Who says a line of hers when it is someone other than [CompanionLog.name]
+  /// (the tavern: one of a group, the narrator), and their colour; null: her.
+  final String? who;
+  final Color? tone;
 
   @override
-  int get hashCode => Object.hash(speaker, text, code);
+  bool operator ==(Object other) =>
+      other is CompanionLogEntry &&
+      other.speaker == speaker &&
+      other.text == text &&
+      other.code == code &&
+      other.who == who &&
+      other.tone == tone;
+
+  @override
+  int get hashCode => Object.hash(speaker, text, code, who, tone);
 
   @override
   String toString() => '${speaker.name}: $text';
@@ -145,9 +158,20 @@ class CompanionLog extends StatefulWidget {
     this.loadingOlder = false,
     this.history = 0,
     this.onOpenChat,
+    this.scrim,
+    this.herTone = companionLogHerTone,
+    this.youTone = companionLogYouTone,
   });
 
   final List<CompanionLogEntry> entries;
+
+  /// The veil over the stage, top to bottom; null: 伙伴小屋's night blue.
+  /// A page with its own look (the tavern's 视觉小说) passes its colours.
+  final List<Color>? scrim;
+
+  /// The speakers' name colours.
+  final Color herTone;
+  final Color youTone;
 
   /// Her name, over her lines.
   final String name;
@@ -283,8 +307,10 @@ class _CompanionLogState extends State<CompanionLog> {
                   return _LogLine(
                     entry: entry,
                     name: widget.name,
+                    herTone: widget.herTone,
+                    youTone: widget.youTone,
                     // A speaker's name only where the speaker changes.
-                    named: before == null || before.speaker != entry.speaker,
+                    named: before == null || before.speaker != entry.speaker || before.who != entry.who,
                     first: before == null,
                   );
                 },
@@ -304,9 +330,11 @@ class _CompanionLogState extends State<CompanionLog> {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: blur
-                    ? const [Color(0xD90A1B2C), Color(0xEB071524)]
-                    : const [Color(0xF20A1B2C), Color(0xFA071524)],
+                colors:
+                    widget.scrim ??
+                    (blur
+                        ? const [Color(0xD90A1B2C), Color(0xEB071524)]
+                        : const [Color(0xF20A1B2C), Color(0xFA071524)]),
               ),
             ),
           ),
@@ -354,10 +382,19 @@ class _CompanionLogState extends State<CompanionLog> {
 }
 
 class _LogLine extends StatelessWidget {
-  const _LogLine({required this.entry, required this.name, required this.named, required this.first});
+  const _LogLine({
+    required this.entry,
+    required this.name,
+    required this.named,
+    required this.first,
+    this.herTone = companionLogHerTone,
+    this.youTone = companionLogYouTone,
+  });
 
   final CompanionLogEntry entry;
   final String name;
+  final Color herTone;
+  final Color youTone;
   final bool named;
   final bool first;
 
@@ -385,7 +422,8 @@ class _LogLine extends StatelessWidget {
       );
     }
     final her = entry.speaker == CompanionLogSpeaker.her;
-    final who = her ? name : l10n.companionLogYou;
+    final who = her ? (entry.who ?? name) : l10n.companionLogYou;
+    final tone = her ? (entry.tone ?? herTone) : youTone;
     return Padding(
       padding: EdgeInsets.only(top: gap),
       child: Semantics(
@@ -400,7 +438,7 @@ class _LogLine extends StatelessWidget {
                 child: Text(
                   who,
                   style: theme.textTheme.labelLarge?.copyWith(
-                    color: her ? companionLogHerTone : companionLogYouTone,
+                    color: tone,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 0.6,
                   ),

@@ -10,7 +10,7 @@ async function fixture(t,{connection=true,entries=[],addressable=entries}={}){
  const editor={canWrite:()=>true,entries:()=>addressable,configuration:()=>{reads++;return addressable.map(entry=>({entry,inherited:entry.options.config??{},override:entry.options.config??{}}));}};
  const ctx={logger:{warn(){}},get:n=>n==='loader'?{entries:()=>entries}:n==='configEditor'?editor:n==='connection'&&connection?{requestRejection:()=>undefined}:undefined,
  on(n,fn){const fns=hooks.get(n)??[];fns.push(fn);hooks.set(n,fns);},provide(){},effect(fn){const d=fn();if(typeof d==='function')dispose.push(d);},inject(_deps,fn){fn(ctx);},
- webServer:{register(r){routes.push(r);return ()=>{};},registerUpgrade(){return ()=>{};}}};
+ webServer:{tapIndex(){return ()=>{};},register(r){routes.push(r);return ()=>{};},registerUpgrade(){return ()=>{};}}};
  const source=withSources(ctx,entries);let resolutions=0;const resolve=source.internal.resolveSync;
  source.internal.resolveSync=function(...args){resolutions++;return resolve.apply(this,args);};
  apply(ctx,{persist:false,guardRoutes:false});

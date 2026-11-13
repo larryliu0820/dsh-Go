@@ -20,7 +20,7 @@ from unittest import mock
 
 import apk_delta
 from build_number import MAX_VERSION_CODE
-from release_assets import BADGING_RE, ReleaseError, check_abis, patch_from, previous_releases, published_apk, release_build
+from release_assets import BADGING_RE, ReleaseError, check_abis, find_aapt2, patch_from, previous_releases, published_apk, release_build
 
 # Stands in for gh: `release list` prints $FAKE_RELEASES, `release download`
 # copies the asset files from $FAKE_ASSETS/<tag>/; every call goes to $FAKE_LOG.
@@ -62,6 +62,71 @@ def sha(path):
 
 
 class ReleaseBuildTest(unittest.TestCase):
+    def test_sdk_tool_lookup_uses_platform_filename_newest_version_and_path_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            for platform, filename in (("win32", "aapt2.exe"), ("linux", "aapt2")):
+                with self.subTest(platform=platform):
+                    sdk = root / platform / "Android SDK"
+                    for version in ("35.0.9", "35.0.10"):
+                        tool = sdk / "build-tools" / version / filename
+                        tool.parent.mkdir(parents=True)
+                        tool.write_bytes(b"not executed")
+                    with mock.patch("release_assets.ROOT", root), \
+                            mock.patch("release_assets.sys.platform", platform), \
+                            mock.patch("release_assets.shutil.which", return_value=None) as which, \
+                            mock.patch.dict(os.environ, {"ANDROID_HOME": str(sdk), "ANDROID_SDK_ROOT": ""}):
+                        self.assertEqual(find_aapt2(), str(sdk / "build-tools" / "35.0.10" / filename))
+                        preferred = root / filename
+                        preferred.write_bytes(b"not executed")
+                        which.return_value = str(preferred)
+                        self.assertEqual(find_aapt2(), str(preferred))
+
+    def test_sdk_tool_lookup_decodes_local_properties_without_changing_plain_unicode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            sdk = root / "Android SDK 用户 🐳 #!="
+            tool = sdk / "build-tools" / "35.0.10" / ("aapt2.exe" if sys.platform == "win32" else "aapt2")
+            tool.parent.mkdir(parents=True)
+            tool.write_bytes(b"not executed")
+            props = root / "app" / "android" / "local.properties"
+            props.parent.mkdir(parents=True)
+            escaped = str(sdk).replace("\\", "\\\\").replace(":", "\\:")
+            escaped = escaped.replace("#", "\\#").replace("!", "\\!").replace("=", "\\=")
+            escaped = escaped.replace("用户 🐳", r"\u7528\u6237 \uD83D\uDC33")
+            for value in (str(sdk), escaped):
+                with self.subTest(value=value):
+                    props.write_text("sdk.dir=" + value + "\n", encoding="utf-8")
+                    with mock.patch("release_assets.ROOT", root), \
+                            mock.patch("release_assets.shutil.which", return_value=None), \
+                            mock.patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}):
+                        self.assertEqual(find_aapt2(), str(tool))
+
+    def test_sdk_tool_lookup_unescapes_windows_path_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            props = root / "app" / "android" / "local.properties"
+            props.parent.mkdir(parents=True)
+            tool = root / "build-tools" / "35.0.10" / "aapt2.exe"
+            sdk = r"C:\Users\用户\u1234\Android SDK"
+            for value in (
+                r"C:\\Users\\用户\\u1234\\Android SDK",
+                r"C\:\\Users\\\u7528\u6237\\u1234\\Android SDK",
+                "C:/Users/用户/u1234/Android SDK",
+            ):
+                expected = sdk if "\\" in value else value
+                with self.subTest(value=value):
+                    props.write_text("sdk.dir=" + value + "\n", encoding="utf-8")
+                    with mock.patch("release_assets.ROOT", root), \
+                            mock.patch("release_assets.shutil.which", return_value=None), \
+                            mock.patch("release_assets.sys.platform", "win32"), \
+                            mock.patch.dict(os.environ, {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}), \
+                            mock.patch("release_assets.pathlib.Path") as paths:
+                        paths.return_value.glob.return_value = [tool]
+                        self.assertEqual(find_aapt2(), str(tool))
+                        paths.assert_called_once_with(expected)
+                        paths.return_value.glob.assert_called_once_with("build-tools/*/aapt2.exe")
+
     def test_both_flavors_agree(self):
         apks = {"arm64": ("1.2.0", 10251234), "x64": ("1.2.0", 10251234)}
         self.assertEqual(release_build("1.2.0", None, apks), 10251234)

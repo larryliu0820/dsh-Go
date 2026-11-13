@@ -159,8 +159,15 @@ class SelfUpdateInstallerService(private val context: Context) : ISelfUpdateInst
                 result = runInstall(apk, size, sha, version, userId, timedOut)
                 if (timedOut.get()) result = SelfUpdatePolicy.unknown()
             } catch (error: Exception) {
-                result = if (dispatched.get() || timedOut.get()) SelfUpdatePolicy.unknown()
-                    else SelfUpdateReceipt("invalid", (error as? SelfUpdateException)?.code ?: "invalidApk")
+                result = if (dispatched.get() || timedOut.get()) SelfUpdatePolicy.unknown() else {
+                    val code = stableSelfUpdateFailure(error).code
+                    val status = when (code) {
+                        "storage" -> "storage"
+                        "unavailable" -> "unavailable"
+                        else -> "invalid"
+                    }
+                    SelfUpdateReceipt(status, code)
+                }
             } finally {
                 completed.set(true)
                 timer.interrupt()
@@ -174,18 +181,22 @@ class SelfUpdateInstallerService(private val context: Context) : ISelfUpdateInst
     }
 
     private fun runInstall(apk: ParcelFileDescriptor, size: Long, sha: String, version: Long, userId: Int, timedOut: AtomicBoolean): SelfUpdateReceipt {
+        cleanupSelfUpdateDirectories(File("/data/local/tmp"))
         val directory = File("/data/local/tmp", "dsh-self-update-" + UUID.randomUUID().toString())
         if (!directory.mkdir()) throw SelfUpdateException("storage")
         Os.chmod(directory.path, 448)
         val file = File(directory, "base.apk")
         try {
+            // FileOutputStream(fd) leaves this caller-owned descriptor open on Android.
             val fd = Os.open(file.path, OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_CLOEXEC, 384)
-            ParcelFileDescriptor.AutoCloseInputStream(apk).use { input ->
-                FileOutputStream(fd).use { output ->
-                    SelfUpdatePolicy.copyVerified(input, output, size, sha)
-                    output.fd.sync()
+            try {
+                ParcelFileDescriptor.AutoCloseInputStream(apk).use { input ->
+                    FileOutputStream(fd).use { output ->
+                        SelfUpdatePolicy.copyVerified(input, output, size, sha)
+                        output.fd.sync()
+                    }
                 }
-            }
+            } finally { Os.close(fd) }
             Os.chmod(file.path, 256)
             SelfUpdatePolicy.requireIdentity(Process.myUid())
             val snapshot = SelfUpdateSnapshot(file, size)

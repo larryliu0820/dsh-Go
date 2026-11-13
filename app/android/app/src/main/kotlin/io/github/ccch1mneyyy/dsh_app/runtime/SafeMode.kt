@@ -197,18 +197,18 @@ object SafeMode {
         },
     ): List<Hazard> {
         val out = ArrayList<Hazard>()
-        readIfFile(guestFile(rootfs, MOVABLE[0]))?.let { text ->
+        readIfFile(rootfs, MOVABLE[0])?.let { text ->
             if (!isTrivialPatch(text)) {
                 out += Hazard(MOVABLE[0], "homePatch", patchDetail)
             }
         }
-        readIfFile(guestFile(rootfs, MOVABLE[1]))?.let { text ->
+        readIfFile(rootfs, MOVABLE[1])?.let { text ->
             val names = launchOnlyNames(text, home = true)
             if (names.isNotEmpty()) {
                 out += Hazard(MOVABLE[1], "homeEnv", envDetail(names))
             }
         }
-        readIfFile(guestFile(rootfs, MOVABLE[2]))?.let { text ->
+        readIfFile(rootfs, MOVABLE[2])?.let { text ->
             val names = launchOnlyNames(text, home = false)
             if (names.isNotEmpty()) {
                 out += Hazard(MOVABLE[2], "cwdEnv", envDetail(names))
@@ -225,7 +225,7 @@ object SafeMode {
         for (path in guestPaths.distinct()) {
             if (path !in MOVABLE) continue
             val file = guestFile(rootfs, path)
-            if (!file.isFile) continue
+            if (readableFile(rootfs, path) == null) continue
             var target = File(file.parentFile, "${file.name}.off-$stamp")
             var n = 1
             while (target.exists()) target = File(file.parentFile, "${file.name}.off-$stamp-${n++}")
@@ -467,8 +467,17 @@ object SafeMode {
 
     fun guestFile(rootfs: File, guestPath: String): File = File(rootfs, guestPath.removePrefix("/"))
 
-    private fun readIfFile(file: File): String? = try {
-        if (file.isFile) file.readText() else null
+    private fun readIfFile(rootfs: File, guestPath: String): String? = try {
+        readableFile(rootfs, guestPath)?.readText()
+    } catch (_: Exception) {
+        null
+    }
+
+    // Preflight precedes the safe launch's tawc materialization. Resolve bytes for reading;
+    // moveAside must still rename the original guest name, never its shared store object.
+    private fun readableFile(rootfs: File, guestPath: String): File? = try {
+        guestFile(rootfs, guestPath).takeIf { it.isFile }
+            ?: io.github.ccch1mneyyy.dsh_app.files.GuestFiles.resolve(rootfs, guestPath, phoneRoot = PhoneStorage.GUEST_PATH)
     } catch (_: Exception) {
         null
     }
@@ -536,6 +545,7 @@ object SafeMode {
 const fs = require('fs')
 const path = require('path')
 const cp = require('child_process')
+const { randomUUID } = require('crypto')
 
 const HOME = process.env.DSH_APP_ORIGINAL_HOME || process.env.DSH_HOME || '/root/.dsh'
 const SAFE = process.env.DSH_APP_SAFE_DIR || '/var/lib/dsh-app/safe-mode'
@@ -617,32 +627,48 @@ function requireInstalledBundle (name) {
   throw new Error(name + ' 在 DSH 安装和 web profile 中都无法解析，不能启用')
 }
 
-// Same protocol as DSH's own writers: a `wx`-created <file>.lock holding the writer's pid,
-// taken over when that pid no longer exists; the new content lands by rename.
+// Publish a complete pid record at <file>.lock; the other writers follow symlinks.
+// Dead-pid takeover stays the same, and new manifest content still lands by rename.
 function withLock (file, fn) {
   const lock = file + '.lock'
   const deadline = Date.now() + 5000
-  for (;;) {
-    try {
-      fs.writeFileSync(lock, process.pid + '\n', { flag: 'wx', mode: 0o600 })
-      break
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e
-      const pid = parseInt(String(readText(lock) || '').trim(), 10)
-      if (pid > 0 && !alive(pid)) {
-        fs.rmSync(lock, { force: true })
-        continue
+  const owner = path.join(path.dirname(file), '.dsh-helper-lock-' + randomUUID() + '.pid')
+  const fd = fs.openSync(owner, 'wx', 0o600)
+  let published = false
+  try {
+    try { fs.writeFileSync(fd, process.pid + '\n') } finally { fs.closeSync(fd) }
+    for (;;) {
+      try {
+        fs.symlinkSync(path.basename(owner), lock)
+        published = true
+        break
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e
+        const pid = parseInt(String(readText(lock) || '').trim(), 10)
+        if (pid > 0 && !alive(pid)) {
+          fs.rmSync(lock, { force: true })
+          continue
+        }
+        if (Date.now() > deadline) break
+        sleep(100)
       }
-      if (Date.now() > deadline) die('package.json 正被别的进程修改（锁文件 ' + lock + '），稍后再试')
-      sleep(100)
     }
+    if (published) return fn()
+  } finally {
+    // If unlink fails, keep the owner so the remaining lock is still readable.
+    if (published) fs.rmSync(lock, { force: true })
+    fs.rmSync(owner, { force: true })
   }
-  try { return fn() } finally { fs.rmSync(lock, { force: true }) }
+  die('package.json 正被别的进程修改（锁文件 ' + lock + '），稍后再试')
 }
 function writeAtomic (file, text) {
   const tmp = file + '.' + process.pid + '.' + Date.now() + '.tmp'
-  fs.writeFileSync(tmp, text)
-  fs.renameSync(tmp, file)
+  try {
+    fs.writeFileSync(tmp, text)
+    fs.renameSync(tmp, file)
+  } finally {
+    fs.rmSync(tmp, { force: true })
+  }
 }
 function updateBundles (change) {
   const file = manifestPath()
@@ -857,20 +883,38 @@ function trial (args) {
     env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe']
   })
   const seconds = function (ms) { return Math.round(ms / 1000) }
-  const onData = function (chunk) {
-    for (const line of String(chunk).split('\n')) {
-      if (!line) continue
-      tail.push(redact(line))
-      if (tail.length > 60) tail.shift()
-      if (!upAt && line.indexOf('token=') >= 0) upAt = Date.now()
+  const capture = function (stream) {
+    let pending = ''
+    let line = ''
+    const saveLine = function () {
+      if (line) {
+        const text = line.length > 2000 ? line.slice(0, 2000).replace(/[\uD800-\uDBFF]$/, '') + '…' : line
+        tail.push(redact(text))
+        if (tail.length > 60) tail.shift()
+      }
+      line = ''
     }
+    stream.setEncoding('utf8')
+    stream.on('data', function (chunk) {
+      const text = pending + String(chunk)
+      if (!upAt && text.indexOf('token=') >= 0) upAt = Date.now()
+      // A pipe can split the six-byte marker anywhere; streams stay separate.
+      pending = text.slice(-5)
+      const lines = String(chunk).split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        // One extra character records truncation without retaining an unbounded line.
+        line += lines[i].slice(0, 2001 - line.length)
+        if (i + 1 < lines.length) saveLine()
+      }
+    })
+    return saveLine
   }
-  child.stdout.on('data', onData)
-  child.stderr.on('data', onData)
+  const flushOutput = [capture(child.stdout), capture(child.stderr)]
   const finish = function (code, text, showTail) {
     if (finished) return
     finished = true
     clearInterval(timer)
+    flushOutput.forEach(function (flush) { flush() })
     out(text)
     if (showTail) out(tail.slice(-40).join('\n'))
     else {

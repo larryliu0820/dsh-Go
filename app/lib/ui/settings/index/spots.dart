@@ -76,6 +76,7 @@ enum SettingsPageId {
   interface,
   notifications,
   voice,
+  voiceReading,
   performance,
   background,
   systemAccess,
@@ -438,6 +439,13 @@ final _pages = <SettingsPageMeta>[
     links: const ['voice'],
   ),
   SettingsPageMeta(
+    SettingsPageId.voiceReading,
+    title: (l) => l.speechVoiceTitle,
+    parent: SettingsPageId.voice,
+    keywords: (l) => l.searchKwVoiceReading,
+    links: const ['voice-reading'],
+  ),
+  SettingsPageMeta(
     SettingsPageId.performance,
     title: (l) => l.performanceTitle,
     group: _general,
@@ -777,6 +785,18 @@ abstract final class Spots {
     title: (l) => l.botsPetDisplayWhen,
     keywords: (l) => l.searchKwPetDisplayWhen,
   );
+  static final petOverlayShows = SettingSpot(
+    'pet-overlay-shows',
+    page: SettingsPageId.pets,
+    title: (l) => l.botsPetOverlayShows,
+    keywords: (l) => l.searchKwPetOverlayShows,
+  );
+  static final petOverlayFraming = SettingSpot(
+    'pet-overlay-framing',
+    page: SettingsPageId.pets,
+    title: (l) => l.botsPetOverlayFraming,
+    keywords: (l) => l.searchKwPetOverlayFraming,
+  );
 
   // 界面.
   static final uiMode = SettingSpot(
@@ -790,6 +810,12 @@ abstract final class Spots {
     page: SettingsPageId.interface,
     title: (l) => l.hubHardwareEnterSends,
     keywords: (l) => l.hubHardwareEnterSendsHint,
+  );
+  static final chatSuggestions = SettingSpot(
+    'chat-suggestions',
+    page: SettingsPageId.interface,
+    title: (l) => l.hubChatSuggestions,
+    keywords: (l) => l.searchKwChatSuggestions,
   );
   static final quickPanel = SettingSpot(
     'quick-panel',
@@ -1092,8 +1118,11 @@ final _rows = <SettingSpot>[
   Spots.petQuiet,
   Spots.petOutsideApp,
   Spots.petDisplayWhen,
+  Spots.petOverlayShows,
+  Spots.petOverlayFraming,
   Spots.uiMode,
   Spots.hardwareEnterSends,
+  Spots.chatSuggestions,
   Spots.quickPanel,
   Spots.tableTint,
   Spots.webApp,

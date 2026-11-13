@@ -393,9 +393,12 @@ class SettingsSegmentTile<T> extends StatelessWidget {
     this.tint = 0,
     this.title,
     this.spot,
+    this.subtitle,
+    this.subtitleAction,
     required this.segments,
     required this.selected,
     required this.onChanged,
+    this.onReselect,
     this.tinted = true,
   }) : assert(title != null || spot != null);
 
@@ -405,9 +408,18 @@ class SettingsSegmentTile<T> extends StatelessWidget {
   /// Defaults to [spot]'s title.
   final String? title;
   final SettingSpot? spot;
+
+  /// A line under the control (so the control stays put when it comes and goes).
+  final String? subtitle;
+
+  /// Something to tap right after [subtitle]; on the next line when it doesn't fit.
+  final Widget? subtitleAction;
   final List<PillSegment<T>> segments;
   final T selected;
   final ValueChanged<T>? onChanged;
+
+  /// See [SegmentedPill.onReselect].
+  final ValueChanged<T>? onReselect;
   final bool tinted;
 
   @override
@@ -443,10 +455,28 @@ class SettingsSegmentTile<T> extends StatelessWidget {
               segments: segments,
               selected: selected,
               onChanged: onChanged,
+              onReselect: onReselect,
               expand: !inline,
             );
+            final note = switch (subtitle) {
+              final sub? => Padding(
+                padding: EdgeInsets.only(left: lead, top: 6, bottom: 2),
+                child: Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      sub,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: DshColors.of(context).textTertiary),
+                    ),
+                    ?subtitleAction,
+                  ],
+                ),
+              ),
+              null => null,
+            };
             if (inline) {
-              return ConstrainedBox(
+              final row = ConstrainedBox(
                 constraints: const BoxConstraints(minHeight: SettingsMetrics.rowHeight - 16),
                 child: Row(
                   children: [
@@ -457,6 +487,8 @@ class SettingsSegmentTile<T> extends StatelessWidget {
                   ],
                 ),
               );
+              if (note == null) return row;
+              return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [row, note]);
             }
             return Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -476,6 +508,7 @@ class SettingsSegmentTile<T> extends StatelessWidget {
                   child: pill,
                 ),
                 const SizedBox(height: 4),
+                ?note,
               ],
             );
           },

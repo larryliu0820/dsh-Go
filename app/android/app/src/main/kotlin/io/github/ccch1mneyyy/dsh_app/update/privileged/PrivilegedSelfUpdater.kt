@@ -2,6 +2,7 @@ package io.github.ccch1mneyyy.dsh_app.update.privileged
 
 import android.content.Context
 import android.os.Process
+import android.system.ErrnoException
 import android.system.Os
 import android.system.OsConstants
 import java.io.File
@@ -61,7 +62,7 @@ class PrivilegedSelfUpdater(context: Context) {
             runCatching { transport?.close() }
             runCatching { snapshot?.close() }
             synchronized(globalGuard) { if (reservation === ticket) reservation = null }
-            throw stable(error)
+            throw stableSelfUpdateFailure(error)
         }
     }
 
@@ -86,8 +87,11 @@ class PrivilegedSelfUpdater(context: Context) {
                 if (!preferences.edit().clear().putString("state", "pending").putString("backend", prepared.backend)
                         .putString("requestId", requestId).putLong("versionCode", prepared.versionCode)
                         .putLong("size", prepared.snapshot.size).putString("sha256", prepared.sha256)
-                        .putStringSet("signers", prepared.identity.signers).commit())
+                        .putStringSet("signers", prepared.identity.signers).commit()) {
+                    // commit already changed memory; this attempt never reached the transport.
+                    preferences.edit().clear().apply()
                     throw SelfUpdateException("persistenceFailed")
+                }
                 persisted = true
                 installing = true
             }
@@ -99,7 +103,7 @@ class PrivilegedSelfUpdater(context: Context) {
                     SelfUpdateReceipt("success", submitted = true) else SelfUpdatePolicy.unknown()
             }
         } catch (error: Exception) {
-            receipt = if (persisted) SelfUpdatePolicy.unknown() else SelfUpdateReceipt("unavailable", stable(error).code)
+            receipt = if (persisted) SelfUpdatePolicy.unknown() else SelfUpdateReceipt("unavailable", stableSelfUpdateFailure(error).code)
         } finally {
             synchronized(globalGuard) { installing = false }
         }
@@ -159,7 +163,11 @@ class PrivilegedSelfUpdater(context: Context) {
         synchronized(globalGuard) {
             val latest = pendingMap()
             if (installing || reservation != null || latest["state"] != "unknown") return latest
-            if (!preferences.edit().clear().commit()) return latest + mapOf("errorCode" to "persistenceFailed")
+            if (!preferences.edit().putString("state", "none").commit()) {
+                // commit changes memory even on failure. Keep the receipt for an explicit retry.
+                preferences.edit().putString("state", "unknown").commit()
+                return latest + mapOf("errorCode" to "persistenceFailed")
+            }
             runCatching { cleanupSnapshots() }
         }
         return mapOf("state" to "none", "canAcknowledge" to false)
@@ -185,17 +193,22 @@ class PrivilegedSelfUpdater(context: Context) {
         if (directory.canonicalFile != File(context.filesDir.canonicalFile, "self-update-v1")) throw SelfUpdateException("invalidPath")
         val file = File(directory, UUID.randomUUID().toString() + ".apk")
         try {
+            // Android streams constructed from a FileDescriptor do not own it.
             val fd = Os.open(source.path, OsConstants.O_RDONLY or OsConstants.O_CLOEXEC or OsConstants.O_NOFOLLOW, 0)
-            val size = FileInputStream(fd).use { input ->
-                val stat = Os.fstat(fd)
-                if (!OsConstants.S_ISREG(stat.st_mode)) throw SelfUpdateException("invalidPath")
-                val outFd = Os.open(file.path, OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_CLOEXEC, 384)
-                FileOutputStream(outFd).use { output ->
-                    SelfUpdatePolicy.copyVerified(input, output, stat.st_size, digest)
-                    output.fd.sync()
+            val size = try {
+                FileInputStream(fd).use { input ->
+                    val stat = Os.fstat(fd)
+                    if (!OsConstants.S_ISREG(stat.st_mode)) throw SelfUpdateException("invalidPath")
+                    val outFd = Os.open(file.path, OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_CLOEXEC, 384)
+                    try {
+                        FileOutputStream(outFd).use { output ->
+                            SelfUpdatePolicy.copyVerified(input, output, stat.st_size, digest)
+                            output.fd.sync()
+                        }
+                    } finally { Os.close(outFd) }
+                    stat.st_size
                 }
-                stat.st_size
-            }
+            } finally { Os.close(fd) }
             Os.chmod(file.path, 256)
             return SelfUpdateSnapshot(file, size)
         } catch (error: Exception) {
@@ -213,12 +226,17 @@ class PrivilegedSelfUpdater(context: Context) {
         }
     }
 
-    private fun stable(error: Exception): SelfUpdateException =
-        if (error is SelfUpdateException) error else SelfUpdateException("unavailable")
-
     private companion object {
         val globalGuard = Any()
         var reservation: Any? = null
         var installing = false
     }
+}
+
+internal fun stableSelfUpdateFailure(error: Exception): SelfUpdateException = when {
+    error is SelfUpdateException -> error
+    // Os.open throws errno directly; FileOutputStream.write wraps it in IOException.
+    (error as? ErrnoException ?: error.cause as? ErrnoException)?.errno == OsConstants.ENOSPC ->
+        SelfUpdateException("storage")
+    else -> SelfUpdateException("unavailable")
 }
