@@ -351,6 +351,8 @@ class ToolView {
   List<({String? oldText, String newText})>? _changeBlocks() {
     final fromMeta = _diffsFromMeta(item.meta);
     if (fromMeta != null) return fromMeta;
+    // Partial arguments are previews, not the source an edit actually wrote.
+    if (args == null) return null;
     if (name == 'edit') {
       final from = arg('old_string');
       final to = arg('new_string');
@@ -406,6 +408,7 @@ class ToolView {
 
   /// 新写入文件的内容(write 新建,或 str_replace_editor create)。
   String? get writtenContent {
+    if (args == null) return null;
     if (name == 'write') return arg('content');
     if (name == 'str_replace_editor' && arg('command') == 'create') {
       return arg('file_text');

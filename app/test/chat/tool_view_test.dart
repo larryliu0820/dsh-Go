@@ -82,6 +82,62 @@ void main() {
     expect(fromArgs.diff!.first.kind, DiffLineKind.del);
   });
 
+  group('compacted file arguments', () {
+    const marker = '\n[Compact history: output omitted]';
+    final cases = <(String, Map<String, Object?>)>[
+      ('edit', {'file_path': 'sample.cpp', 'old_string': 'before', 'new_string': 'after' * 200}),
+      (
+        'str_replace_editor',
+        {'command': 'str_replace', 'path': 'sample.cpp', 'old_str': 'before', 'new_str': 'after' * 200},
+      ),
+      ('write', {'file_path': 'sample.cpp', 'content': 'after' * 200}),
+      ('str_replace_editor', {'command': 'create', 'path': 'sample.cpp', 'file_text': 'after' * 200}),
+    ];
+    for (final (name, arguments) in cases) {
+      test('$name ${arguments['command'] ?? ''} keeps its path without inventing source', () {
+        final raw = jsonEncode(arguments);
+        final item = ToolChatItem(
+          callId: 'compact',
+          name: name,
+          arguments: '${raw.substring(0, 512)}$marker',
+          status: ToolStatus.succeeded,
+          meta: const {'summary': 'compacted result'},
+        );
+        final view = ToolView.of(item);
+        expect(view.path, 'sample.cpp');
+        expect(view.args, isNull);
+        expect(view.changeBlocks, isNull);
+        expect(view.writtenContent, isNull);
+        expect(view.diff, isNull);
+        expect(view.diffCounts, isNull);
+      });
+    }
+
+    test('complete metadata still supplies an edit diff when arguments are incomplete', () {
+      final view = ToolView.of(
+        ToolChatItem(
+          callId: 'meta',
+          name: 'edit',
+          arguments: '{"file_path":"sample.cpp","new_string":"after$marker',
+          status: ToolStatus.succeeded,
+          meta: const {
+            'diffs': [
+              {'oldText': 'before', 'newText': 'after'},
+            ],
+          },
+        ),
+      );
+      expect(view.diffCounts, (added: 1, removed: 1));
+      expect(view.diff!.map((line) => line.text), ['-before', '+after']);
+    });
+
+    test('a literal omission marker in complete source remains a valid edit', () {
+      final view = ToolView.of(tool('literal', 'edit', {'old_string': 'before', 'new_string': 'after$marker'}));
+      expect(view.diffCounts, (added: 2, removed: 1));
+      expect(view.diff!.last.text, '+[Compact history: output omitted]');
+    });
+  });
+
   test('read window comes from meta lines or the numbered result text', () {
     final fromText = ToolView.of(
       tool(

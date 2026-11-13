@@ -309,7 +309,7 @@ List<FileChange> _computeChanges(List<ToolChatItem> tools) {
     final after = view.writtenContent;
     if (after != null) {
       known[path] = _KnownLines(1, _contentLines(after));
-    } else if (change != null && !change.tracked) {
+    } else if (change == null || !change.tracked) {
       known.remove(path);
     }
     if (change == null) continue;
@@ -431,8 +431,8 @@ List<TurnChanges> turnChanges(List<ChatItem> items, {bool running = false}) {
       return (created: false, hunks: hunks, tracked: tracked);
     }
     if (command == 'insert') {
-      final text = view.arg('new_str');
-      if (text != null) {
+      final text = view.args?['new_str'];
+      if (text is String) {
         final after = view.args?['insert_line'];
         final line = after is int ? after : null;
         final added = _contentLines(text);

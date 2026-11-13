@@ -236,6 +236,54 @@ void main() {
       expect(changes.map((c) => (c.shownPath, c.created, c.added)), [('new.py', true, 2), ('x.py', false, 1)]);
     });
 
+    test('compacted mutation history does not create Turn changes or poison later line numbers', () {
+      final cases = <(String, Map<String, Object?>)>[
+        ('edit', {'file_path': 'sample.cpp', 'old_string': 'before', 'new_string': 'after' * 200}),
+        ('write', {'file_path': 'sample.cpp', 'content': 'after' * 200}),
+        (
+          'str_replace_editor',
+          {'command': 'str_replace', 'path': 'sample.cpp', 'old_str': 'before', 'new_str': 'after' * 200},
+        ),
+        ('str_replace_editor', {'command': 'create', 'path': 'sample.cpp', 'file_text': 'after' * 200}),
+        ('str_replace_editor', {'command': 'insert', 'path': 'sample.cpp', 'insert_line': 1, 'new_str': 'after' * 200}),
+      ];
+      for (final (index, (name, arguments)) in cases.indexed) {
+        final raw = jsonEncode(arguments);
+        final compact = ToolChatItem(
+          callId: 'compact-$index',
+          name: name,
+          arguments: '${raw.substring(0, 512)}\n[Compact history: output omitted]',
+          status: ToolStatus.succeeded,
+          meta: const {'summary': 'compacted result'},
+        );
+        expect(fileChangesOf([compact]), isEmpty, reason: '$name ${arguments['command']}');
+        final read = tool(
+          'before-$index',
+          'read',
+          {'file_path': 'sample.cpp'},
+          meta: {
+            'lines': [
+              {'number': 12, 'text': 'before'},
+            ],
+          },
+        );
+        final later = tool('later-$index', 'edit', {
+          'file_path': 'sample.cpp',
+          'old_string': 'before',
+          'new_string': 'complete',
+        });
+        final files = fileChangesOf([read, compact, later]);
+        expect(files, hasLength(1));
+        expect(files.single.edits, 1);
+        expect((files.single.added, files.single.removed), (1, 1));
+        expect(files.single.hunks.single.numbered, isFalse, reason: 'the omitted mutation invalidates prior reads');
+        expect(files.single.patch, isNot(contains('[Compact history: output omitted]')));
+        final items = [user(1, 'Update sample'), compact, assistant(2, 'Done')];
+        expect(turnChanges(items), isEmpty);
+        expect(deriveRows(items: items).whereType<ChangeCardRow>(), isEmpty);
+      }
+    });
+
     test('sandbox refusal is not counted as a separate command', () {
       final tools = [
         tool('s', 'bash', {'command': 'ls'}, status: ToolStatus.failed, result: sandboxRefusal),
